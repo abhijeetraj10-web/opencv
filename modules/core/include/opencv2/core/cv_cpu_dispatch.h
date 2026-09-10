@@ -24,6 +24,13 @@
 #define __CV_CPU_DISPATCH_EXPAND(fn, args, ...) __CV_EXPAND(__CV_CPU_DISPATCH(fn, args, __VA_ARGS__))
 #define CV_CPU_DISPATCH(fn, args, ...) __CV_CPU_DISPATCH_EXPAND(fn, args, __VA_ARGS__, END) // expand macros
 
+// Same as CV_CPU_DISPATCH, but returns a pointer to the selected implementation
+// instead of calling it. Use it to resolve a function pointer once and cache it.
+#define __CV_CPU_DISPATCH_CHAIN_FN_END(fn, mode, ...)  /* done */
+#define __CV_CPU_DISPATCH_FN(fn, mode, ...) __CV_EXPAND(__CV_CPU_DISPATCH_CHAIN_FN_ ## mode(fn, __VA_ARGS__))
+#define __CV_CPU_DISPATCH_FN_EXPAND(fn, ...) __CV_EXPAND(__CV_CPU_DISPATCH_FN(fn, __VA_ARGS__))
+#define CV_CPU_DISPATCH_FN(fn, ...) __CV_CPU_DISPATCH_FN_EXPAND(fn, __VA_ARGS__, END) // expand macros
+
 
 #if defined CV_ENABLE_INTRINSICS \
     && !defined CV_DISABLE_OPTIMIZATION \
@@ -138,7 +145,7 @@
 #endif
 
 #if defined _WIN32 && (defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)) && (defined(CV_CPU_COMPILE_NEON) || !defined(_MSC_VER))
-# include <Intrin.h>
+# include <intrin.h>
 # include <arm_neon.h>
 # define CV_NEON 1
 #elif defined(__ARM_NEON)
@@ -231,12 +238,16 @@ struct VZeroUpperGuard {
 #  define CV_SSE 1
 #  define CV_SSE2 1
 #elif defined _WIN32 && (defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)) && (defined(CV_CPU_COMPILE_NEON) || !defined(_MSC_VER))
-# include <Intrin.h>
+# include <intrin.h>
 # include <arm_neon.h>
 # define CV_NEON 1
 #elif defined(__ARM_NEON)
 #  include <arm_neon.h>
 #  define CV_NEON 1
+#ifdef __ARM_FEATURE_SVE
+# include<arm_sve.h>
+# define CV_SVE 1
+#endif
 #elif defined(__VSX__) && defined(__PPC64__) && defined(__LITTLE_ENDIAN__)
 #  include <altivec.h>
 #  undef vector
@@ -360,6 +371,10 @@ struct VZeroUpperGuard {
 
 #ifndef CV_NEON
 #  define CV_NEON 0
+#endif
+
+#ifndef CV_SVE
+#  define CV_SVE 0
 #endif
 
 #ifndef CV_RVV071

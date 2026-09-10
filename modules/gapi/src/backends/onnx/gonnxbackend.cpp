@@ -126,8 +126,14 @@ class ONNXCompiled {
              std::vector<cv::Mat>& outs);
 
     std::vector<std::string> in_names_without_const;
+
+    cv::gapi::onnx::WorkloadTypeONNXPtr m_workload_type;
+    uint64_t m_workload_listener_id = 0;
+    void setWorkloadType(const std::string &type);
 public:
     explicit ONNXCompiled(const gapi::onnx::detail::ParamDesc &pp);
+    ~ONNXCompiled();
+    void listenToWorkloadType(cv::gapi::onnx::WorkloadTypeONNXPtr workload);
 
     // Extract the information about output layer #i
     cv::GMatDesc outMeta(int i) const;
@@ -324,7 +330,8 @@ inline void preprocess(const cv::Mat& src,
                              cv::Mat& dst) {
     // CNN input type
     const auto type = toCV(ti.type);
-    if (src.depth() != CV_8U) {
+
+    if (src.depth() != CV_8U || src.dims > 2) {
         // Just pass the tensor as-is.
         // No layout or dimension transformations done here!
         // TODO: This needs to be aligned across all NN backends.
@@ -332,10 +339,10 @@ inline void preprocess(const cv::Mat& src,
         if (tensor_dims.size() == ti.dims.size()) {
             for (size_t i = 0; i < ti.dims.size(); ++i) {
                 GAPI_Assert((ti.dims[i] == -1 || ti.dims[i] == tensor_dims[i]) &&
-                            "Non-U8 tensor dimensions should match with all non-dynamic NN input dimensions");
+                            "Tensor dimensions should match with all non-dynamic NN input dimensions");
             }
         } else {
-            GAPI_Error("Non-U8 tensor size should match with NN input");
+            GAPI_Error("Tensor size should match with NN input");
         }
 
         dst = src;
@@ -577,8 +584,10 @@ using GConstGONNXModel = ade::ConstTypedGraph
 } // anonymous namespace
 
 // GCPUExcecutable implementation //////////////////////////////////////////////
-cv::gimpl::onnx::GONNXExecutable::GONNXExecutable(const ade::Graph &g,
-                                                  const std::vector<ade::NodeHandle> &nodes)
+cv::gimpl::onnx::GONNXExecutable::GONNXExecutable(const ade::Graph                   &g,
+                                                  const std::vector<ade::NodeHandle> &nodes,
+                                                  const cv::GCompileArgs             &compileArgs)
+
     : m_g(g), m_gm(m_g) {
     // FIXME: Currently this backend is capable to run a single inference node only.
     // Need to extend our island fusion with merge/not-to-merge decision making parametrization
@@ -589,6 +598,11 @@ cv::gimpl::onnx::GONNXExecutable::GONNXExecutable(const ade::Graph &g,
         case NodeType::OP:
             if (this_nh == nullptr) {
                 this_nh = nh;
+                auto workload_arg = cv::gapi::getCompileArg<cv::gapi::onnx::WorkloadTypeONNXPtr>(compileArgs);
+                if(workload_arg.has_value()) {
+                    const auto &onnx_unit = iem.metadata(nh).get<ONNXUnit>();
+                    onnx_unit.oc->listenToWorkloadType(workload_arg.value());
+                }
             }
             else {
                 util::throw_error(std::logic_error("Multi-node inference is not supported!"));
@@ -832,6 +846,23 @@ ONNXCompiled::ONNXCompiled(const gapi::onnx::detail::ParamDesc &pp)
     // Pre-allocate vectors (not buffers) for runtime info
     in_data.resize(params.num_in);
     out_data.resize(params.num_out);
+}
+
+ONNXCompiled::~ONNXCompiled() {
+    if (m_workload_type) {
+        m_workload_type->removeListener(m_workload_listener_id);
+    }
+}
+
+void ONNXCompiled::setWorkloadType(const std::string &type) {
+    const char* keys[] = {"ep.dynamic.workload_type"};
+    const char* values[] = {type.c_str()};
+    this_session.SetEpDynamicOptions(keys, values, 1);
+}
+
+void ONNXCompiled::listenToWorkloadType(cv::gapi::onnx::WorkloadTypeONNXPtr workload) {
+    m_workload_type = workload;
+    m_workload_listener_id = m_workload_type->addListener(std::bind(&ONNXCompiled::setWorkloadType, this, std::placeholders::_1));
 }
 
 std::vector<TensorInfo> ONNXCompiled::getTensorInfo(TensorPosition pos) {
@@ -1348,9 +1379,9 @@ namespace {
         }
 
         virtual EPtr compile(const ade::Graph &graph,
-                             const cv::GCompileArgs &,
+                             const cv::GCompileArgs &compileArgs,
                              const std::vector<ade::NodeHandle> &nodes) const override {
-            return EPtr{new cv::gimpl::onnx::GONNXExecutable(graph, nodes)};
+            return EPtr{new cv::gimpl::onnx::GONNXExecutable(graph, nodes, compileArgs)};
         }
 
         virtual cv::GKernelPackage auxiliaryKernels() const override {

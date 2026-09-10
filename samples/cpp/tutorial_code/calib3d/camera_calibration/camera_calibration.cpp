@@ -339,6 +339,7 @@ int main(int argc, char* argv[])
             else if (s.arucoDictName == "DICT_APRILTAG_25h9") { arucoDict = cv::aruco::DICT_APRILTAG_25h9; }
             else if (s.arucoDictName == "DICT_APRILTAG_36h10") { arucoDict = cv::aruco::DICT_APRILTAG_36h10; }
             else if (s.arucoDictName == "DICT_APRILTAG_36h11") { arucoDict = cv::aruco::DICT_APRILTAG_36h11; }
+            else if (s.arucoDictName == "DICT_ARUCO_MIP_36h12") { arucoDict = cv::aruco::DICT_ARUCO_MIP_36h12; }
             else {
                 cout << "incorrect name of aruco dictionary \n";
                 return 1;
@@ -647,7 +648,7 @@ static bool runCalibration( Settings& s, Size& imageSize, Mat& cameraMatrix, Mat
     {
         objectPoints[0][s.boardSize.width - 2].x = objectPoints[0][0].x + grid_width;
     }
-    else if (s.calibrationPattern != Settings::Pattern::CHESSBOARD)
+    else if (s.calibrationPattern == Settings::Pattern::CHESSBOARD)
     {
         objectPoints[0][s.boardSize.width - 1].x = objectPoints[0][0].x + grid_width;
     }

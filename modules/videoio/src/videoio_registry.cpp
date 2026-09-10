@@ -112,6 +112,12 @@ static const struct VideoBackendInfo builtin_backends[] =
     DECLARE_STATIC_BACKEND(CAP_V4L, "V4L_BSD", MODE_CAPTURE_ALL, create_V4L_capture_file, create_V4L_capture_cam, 0)
 #endif
 
+    // FFmpeg webcamera by underlying backend (DShow, V4L2, AVFoundation)
+#ifdef HAVE_FFMPEG
+    DECLARE_STATIC_BACKEND(CAP_FFMPEG, "FFMPEG", MODE_CAPTURE_BY_INDEX, 0, cvCreateCameraCapture_FFMPEG_proxy, 0)
+#elif defined(ENABLE_PLUGINS) || defined(HAVE_FFMPEG_WRAPPER)
+    DECLARE_DYNAMIC_BACKEND(CAP_FFMPEG, "FFMPEG", MODE_CAPTURE_BY_INDEX)
+#endif
 
     // RGB-D universal
 #ifdef HAVE_OPENNI2
@@ -138,7 +144,7 @@ static const struct VideoBackendInfo builtin_backends[] =
     DECLARE_STATIC_BACKEND(CAP_XIAPI, "XIMEA", MODE_CAPTURE_ALL, create_XIMEA_capture_file, create_XIMEA_capture_cam, 0)
 #endif
 #ifdef HAVE_ARAVIS_API
-    DECLARE_STATIC_BACKEND(CAP_ARAVIS, "ARAVIS", MODE_CAPTURE_BY_INDEX, 0, create_Aravis_capture, 0)
+    DECLARE_STATIC_BACKEND(CAP_ARAVIS, "ARAVIS", MODE_CAPTURE_ALL, cv::create_Aravis_capture_by_name, create_Aravis_capture, 0)
 #endif
 
 #ifdef HAVE_UEYE // uEye

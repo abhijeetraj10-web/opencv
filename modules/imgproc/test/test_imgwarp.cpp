@@ -675,17 +675,17 @@ int CV_WarpPerspectiveTest::prepare_test_case( int test_case_idx )
     s[3] = Point2f(0,src.rows-1.f);
     d[3] = Point2f(0,dst.rows-1.f);
 
-    float bufer[16];
-    Mat tmp( 1, 16, CV_32FC1, bufer );
+    float buffer[16];
+    Mat tmp( 1, 16, CV_32FC1, buffer );
 
     rng.fill( tmp, RNG::NORMAL, Scalar::all(0.), Scalar::all(0.1) );
 
     for( i = 0; i < 4; i++ )
     {
-        s[i].x += bufer[i*4]*src.cols/2;
-        s[i].y += bufer[i*4+1]*src.rows/2;
-        d[i].x += bufer[i*4+2]*dst.cols/2;
-        d[i].y += bufer[i*4+3]*dst.rows/2;
+        s[i].x += buffer[i*4]*src.cols/2;
+        s[i].y += buffer[i*4+1]*src.rows/2;
+        d[i].x += buffer[i*4+2]*dst.cols/2;
+        d[i].y += buffer[i*4+3]*dst.rows/2;
     }
 
     cv::getPerspectiveTransform( s, d ).convertTo( mat, mat.depth() );
@@ -1275,6 +1275,45 @@ TEST(Imgproc_resize_area, regression)
     check_resize_area<ushort>(expected, actual, 1.0);
 }
 
+CV_ENUM(MultiChannelResizeInter, cv::INTER_LINEAR, cv::INTER_AREA);
+typedef testing::TestWithParam<testing::tuple<MultiChannelResizeInter, int>> Imgproc_ResizeMultiChannel;
+
+TEST_P(Imgproc_ResizeMultiChannel, smoke)
+{
+    int mode = get<0>(GetParam());
+    int cn = get<1>(GetParam());
+
+    cv::Mat src(64, 64, CV_8UC(cn));
+    cv::randu(src, 0, 255);
+
+    std::vector<cv::Mat> srcChannels;
+    cv::split(src, srcChannels);
+
+    cv::Size dsize = (mode == cv::INTER_LINEAR) ? cv::Size(32, 32) : cv::Size(31, 31);
+
+    cv::Mat dstMulti;
+    ASSERT_NO_THROW(cv::resize(src, dstMulti, dsize, 0, 0, mode));
+    EXPECT_EQ(dstMulti.channels(), cn);
+    EXPECT_EQ(dstMulti.size(), dsize);
+
+    std::vector<cv::Mat> dstChannels(cn);
+    for (int i = 0; i < cn; i++)
+        cv::resize(srcChannels[i], dstChannels[i], dsize, 0, 0, mode);
+
+    cv::Mat dstMerged;
+    cv::merge(dstChannels, dstMerged);
+
+    EXPECT_LE(cv::norm(dstMulti, dstMerged, cv::NORM_INF), 1)
+        << "Multi-channel resize (cn=" << cn << ", mode=" << mode
+        << ") does not match per-channel resize";
+}
+
+INSTANTIATE_TEST_CASE_P(/**/,
+    Imgproc_ResizeMultiChannel,
+        testing::Combine(
+            testing::Values(cv::INTER_LINEAR, cv::INTER_AREA),
+            testing::Values(5, 8)));
+
 TEST(Imgproc_resize_area, regression_half_round)
 {
     static uchar input_data[32 * 32];
@@ -1558,6 +1597,97 @@ TEST(Imgproc_Warp, regression_19566)  // valgrind should detect problem if any
         cv::BORDER_CONSTANT,
         cv::Scalar(0.0, 0.0, 0.0, 255.0)
     );
+}
+
+
+TEST(Imgproc_Warp, regression_28554)
+{
+    const Size inSize(128, 128);
+    const Size outSize(256, 256);
+
+    Mat inMat = Mat::ones(inSize, CV_16S);
+    Mat outMat = Mat(outSize, CV_16S);
+    Mat coeffs = Mat::eye(2, 3, CV_64F);
+    coeffs.at<double>(0, 2) = 64.;
+    coeffs.at<double>(1, 2) = 64.;
+
+    warpAffine(
+        inMat,
+        outMat,
+        coeffs,
+        outSize,
+        INTER_NEAREST,
+        cv::BORDER_CONSTANT,
+        0.0
+    );
+
+    Mat reference = Mat::zeros(outSize, CV_16S);
+    reference(cv::Rect(64, 64, 128, 128)) = 1;
+    ASSERT_EQ(0.0, cvtest::norm(reference, outMat, NORM_INF));
+}
+
+
+TEST(Imgproc_Warp, regression_29279)
+{
+    // IPP's iwiWarpAffine rounds source coords at the half-pixel boundary unlike the native
+    // kernel (warpAffineBlocklineNN), so its NN output is not bit-exact.
+    // See https://github.com/opencv/opencv/issues/29279
+    const Size srcSize(800, 600);
+    const Size dstSize(900, 900);
+
+    // Gradient values in [1, ~30700]: representable exactly in CV_16S, CV_16U, CV_32F and
+    // CV_64F, so any change in the selected source pixel changes the resulting value.
+    Mat base(srcSize, CV_32SC1);
+    for (int y = 0; y < base.rows; y++)
+        for (int x = 0; x < base.cols; x++)
+            base.at<int>(y, x) = 1 + ((x * 7 + y * 13) % 30000);
+
+    const int channels[]     = { 1, 3, 4 };
+    const int nearestDepth[] = { CV_16S, CV_16U, CV_64F };  // formerly IPP-routed for NEAREST
+    const double angles[]    = { 0.0, 13.7, 45.0, 90.0 };   // 0 and 90 are no-ops, guard regressions
+
+    for (size_t ci = 0; ci < sizeof(channels) / sizeof(channels[0]); ci++)
+    {
+        const int cn = channels[ci];
+
+        std::vector<Mat> planes(cn);
+        for (int c = 0; c < cn; c++)
+            planes[c] = base + c * 101;  // distinct per-channel values, still in range
+        Mat srcInt;
+        merge(planes, srcInt);           // CV_32SC(cn)
+
+        Mat srcRef;
+        srcInt.convertTo(srcRef, CV_MAKETYPE(CV_32F, cn));
+
+        for (size_t ai = 0; ai < sizeof(angles) / sizeof(angles[0]); ai++)
+        {
+            const double angle = angles[ai];
+
+            // Same convention as the issue reproducer: rotation about (400, 300) plus a
+            // fractional translation.
+            Mat M = getRotationMatrix2D(Point2f(400.f, 300.f), angle, 1.0);
+            M.at<double>(0, 2) += 37.3;
+            M.at<double>(1, 2) += -12.8;
+
+            Mat dstRef;
+            warpAffine(srcRef, dstRef, M, dstSize, INTER_NEAREST, BORDER_CONSTANT, Scalar::all(0));
+
+            for (size_t di = 0; di < sizeof(nearestDepth) / sizeof(nearestDepth[0]); di++)
+            {
+                const int type = CV_MAKETYPE(nearestDepth[di], cn);
+                Mat src;
+                srcInt.convertTo(src, type);
+                Mat dst;
+                warpAffine(src, dst, M, dstSize, INTER_NEAREST, BORDER_CONSTANT, Scalar::all(0));
+
+                Mat dstF;
+                dst.convertTo(dstF, CV_MAKETYPE(CV_32F, cn));
+                EXPECT_EQ(0.0, cvtest::norm(dstRef, dstF, NORM_INF))
+                    << "INTER_NEAREST warp not bit-exact with native: depth=" << nearestDepth[di]
+                    << " cn=" << cn << " angle=" << angle;
+            }
+        }
+    }
 }
 
 

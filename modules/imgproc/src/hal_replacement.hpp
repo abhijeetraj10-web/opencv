@@ -87,6 +87,40 @@ int my_hal_filterFree(cvhalFilter2D *context) {
 struct cvhalFilter2D {};
 
 /**
+   @brief 2D filtering in a stateless manner
+   @param src_data source image data
+   @param src_step source image step
+   @param src_type source image type
+   @param dst_data destination image data
+   @param dst_step destination image step
+   @param dst_type destination image type
+   @param width images width
+   @param height images height
+   @param full_width full width of source image (outside the ROI)
+   @param full_height full height of source image (outside the ROI)
+   @param offset_x source image ROI offset X
+   @param offset_y source image ROI offset Y
+   @param kernel_data pointer to kernel data
+   @param kernel_step kernel step
+   @param kernel_type kernel type (CV_8U, ...)
+   @param kernel_width kernel width
+   @param kernel_height kernel height
+   @param anchor_x relative X position of center point within the kernel
+   @param anchor_y relative Y position of center point within the kernel
+   @param delta added to pixel values
+   @param borderType border processing mode (CV_HAL_BORDER_REFLECT, ...)
+   @param isSubmatrix indicates whether the submatrices will be allowed as source image
+   @param allowInplace indicates whether the inplace operation will be possible
+   @sa cv::filter2D, cv::hal::Filter2D
+ */
+inline int hal_ni_filter_stateless(const uchar * src_data, size_t src_step, int src_type,
+                                   uchar * dst_data, size_t dst_step, int dst_type,
+                                   int width, int height, int full_width, int full_height, int offset_x, int offset_y,
+                                   const uchar * kernel_data, size_t kernel_step, int kernel_type, int kernel_width, int kernel_height,
+                                   int anchor_x, int anchor_y, double delta, int borderType, bool isSubmatrix, bool allowInplace)
+{ return CV_HAL_ERROR_NOT_IMPLEMENTED; }
+
+/**
    @brief hal_filterInit
    @param context double pointer to user-defined context
    @param kernel_data pointer to kernel data
@@ -131,10 +165,44 @@ inline int hal_ni_filter(cvhalFilter2D *context, uchar *src_data, size_t src_ste
 inline int hal_ni_filterFree(cvhalFilter2D *context) { return CV_HAL_ERROR_NOT_IMPLEMENTED; }
 
 //! @cond IGNORED
+#define cv_hal_filter_stateless hal_ni_filter_stateless
 #define cv_hal_filterInit hal_ni_filterInit
 #define cv_hal_filter hal_ni_filter
 #define cv_hal_filterFree hal_ni_filterFree
 //! @endcond
+
+/**
+   @brief separable filtering in a stateless manner
+   @param src_data source image data
+   @param src_step source image step
+   @param src_type source image type
+   @param dst_data destination image data
+   @param dst_step destination image step
+   @param dst_type destination image type
+   @param width images width
+   @param height images height
+   @param full_width full width of source image (outside the ROI)
+   @param full_height full height of source image (outside the ROI)
+   @param offset_x source image ROI offset X
+   @param offset_y source image ROI offset Y
+   @param kernelx_data pointer to x-kernel data
+   @param kernelx_len x-kernel vector length
+   @param kernely_data pointer to y-kernel data
+   @param kernely_len y-kernel vector length
+   @param kernel_type kernel type (CV_8U, ...)
+   @param anchor_x relative X position of center point within the kernel
+   @param anchor_y relative Y position of center point within the kernel
+   @param delta added to pixel values
+   @param borderType border processing mode (CV_HAL_BORDER_REFLECT, ...)
+   @sa cv::sepFilter2D, cv::hal::SepFilter2D
+ */
+inline int hal_ni_sepFilter_stateless(const uchar * src_data, size_t src_step, int src_type,
+                                      uchar * dst_data, size_t dst_step, int dst_type,
+                                      int width, int height, int full_width, int full_height, int offset_x, int offset_y,
+                                      const uchar * kernelx_data, int kernelx_len,
+                                      const uchar * kernely_data, int kernely_len,
+                                      int kernel_type, int anchor_x, int anchor_y, double delta, int borderType)
+{ return CV_HAL_ERROR_NOT_IMPLEMENTED; }
 
 /**
    @brief hal_sepFilterInit
@@ -177,10 +245,53 @@ inline int hal_ni_sepFilter(cvhalFilter2D *context, uchar *src_data, size_t src_
 inline int hal_ni_sepFilterFree(cvhalFilter2D *context) { return CV_HAL_ERROR_NOT_IMPLEMENTED; }
 
 //! @cond IGNORED
+#define cv_hal_sepFilter_stateless hal_ni_sepFilter_stateless
 #define cv_hal_sepFilterInit hal_ni_sepFilterInit
 #define cv_hal_sepFilter hal_ni_sepFilter
 #define cv_hal_sepFilterFree hal_ni_sepFilterFree
 //! @endcond
+
+/**
+   @brief morphology in a stateless manner
+   @param operation morphology operation CV_HAL_MORPH_ERODE or CV_HAL_MORPH_DILATE
+   @param src_data source image data
+   @param src_step source image step
+   @param src_type source image type
+   @param dst_data destination image data
+   @param dst_step destination image step
+   @param dst_type destination image type
+   @param width images width
+   @param height images height
+   @param src_full_width full width of source image (outside the ROI)
+   @param src_full_height full height of source image (outside the ROI)
+   @param src_roi_x source image ROI X offset
+   @param src_roi_y source image ROI Y offset
+   @param dst_full_width full width of destination image
+   @param dst_full_height full height of destination image
+   @param dst_roi_x destination image ROI X offset
+   @param dst_roi_y destination image ROI Y offset
+   @param kernel_data pointer to kernel data
+   @param kernel_step kernel step
+   @param kernel_type kernel type (CV_8U, ...)
+   @param kernel_width kernel width
+   @param kernel_height kernel height
+   @param anchor_x relative X position of center point within the kernel
+   @param anchor_y relative Y position of center point within the kernel
+   @param borderType border processing mode (CV_HAL_BORDER_REFLECT, ...)
+   @param borderValue values to use for CV_HAL_BORDER_CONSTANT mode
+   @param iterations number of iterations
+   @param allowSubmatrix indicates whether the submatrices will be allowed as source image
+   @param allowInplace indicates whether the inplace operation will be possible
+   @sa cv::erode, cv::dilate, cv::morphologyEx, cv::hal::Morph
+ */
+inline int hal_ni_morph_stateless(int operation, const uchar * src_data, size_t src_step, int src_type,
+                                  uchar * dst_data, size_t dst_step, int dst_type,
+                                  int width, int height, int src_full_width, int src_full_height, int src_roi_x, int src_roi_y,
+                                  int dst_full_width, int dst_full_height, int dst_roi_x, int dst_roi_y,
+                                  const uchar * kernel_data, size_t kernel_step, int kernel_type, int kernel_width, int kernel_height,
+                                  int anchor_x, int anchor_y, int borderType, const double borderValue[4],
+                                  int iterations, bool allowSubmatrix, bool allowInplace)
+{ return CV_HAL_ERROR_NOT_IMPLEMENTED; }
 
 /**
    @brief hal_morphInit
@@ -233,6 +344,7 @@ inline int hal_ni_morph(cvhalFilter2D *context, uchar *src_data, size_t src_step
 inline int hal_ni_morphFree(cvhalFilter2D *context) { return CV_HAL_ERROR_NOT_IMPLEMENTED; }
 
 //! @cond IGNORED
+#define cv_hal_morph_stateless hal_ni_morph_stateless
 #define cv_hal_morphInit hal_ni_morphInit
 #define cv_hal_morph hal_ni_morph
 #define cv_hal_morphFree hal_ni_morphFree
@@ -346,6 +458,28 @@ inline int hal_ni_warpPerspectiveBlockline(const double *M, short* xy, short* al
 #define cv_hal_warpPerspective hal_ni_warpPerspective
 #define cv_hal_warpPerspectiveBlocklineNN hal_ni_warpPerspectiveBlocklineNN
 #define cv_hal_warpPerspectiveBlockline hal_ni_warpPerspectiveBlockline
+//! @endcond
+
+/**
+   @brief hal_getRectSubPix extract a rectangle from an image with sub-pixel accuracy
+   @param src_type source image type
+   @param src_data source image data
+   @param src_step source image step
+   @param src_width source image width
+   @param src_height source image height
+   @param patch_type extracted patch type
+   @param patch_data extracted patch data
+   @param patch_step extracted patch step
+   @param patch_width extracted patch width
+   @param patch_height extracted patch height
+   @param center_x x-coordinate of the rectangle center (sub-pixel)
+   @param center_y y-coordinate of the rectangle center (sub-pixel)
+   @sa cv::getRectSubPix
+ */
+inline int hal_ni_getRectSubPix(int src_type, const uchar* src_data, size_t src_step, int src_width, int src_height, int patch_type, uchar* patch_data, size_t patch_step, int patch_width, int patch_height, double center_x, double center_y) { return CV_HAL_ERROR_NOT_IMPLEMENTED; }
+
+//! @cond IGNORED
+#define cv_hal_getRectSubPix hal_ni_getRectSubPix
 //! @endcond
 
 /**
@@ -1071,6 +1205,35 @@ inline int hal_ni_bilateralFilter(const uchar* src_data, size_t src_step, uchar*
 //! @endcond
 
 /**
+   @brief Calculate bilateral filter for input tile with optional margins for submatrix. See https://homepages.inf.ed.ac.uk/rbf/CVonline/LOCAL_COPIES/MANDUCHI1/Bilateral_Filtering.html
+   @param src_data Source image data
+   @param src_step Source image step
+   @param dst_data Destination image data
+   @param dst_step Destination image step
+   @param width Source image width
+   @param height Source image height
+   @param depth Depths of source and destination image. Should support CV_8U and CV_32F
+   @param cn Number of channels
+   @param margin_left Left margins for source image
+   @param margin_top Top margins for source image
+   @param margin_right Right margins for source image
+   @param margin_bottom Bottom margins for source image
+   @param d Diameter of each pixel neighborhood that is used during filtering. If it is non-positive, it is computed from sigmaSpace
+   @param sigma_color Filter sigma in the color space
+   @param sigma_space Filter sigma in the coordinate space. When d>0, it specifies the neighborhood size regardless of sigmaSpace. Otherwise, d is proportional to sigmaSpace
+   @param border_type border mode used to extrapolate pixels outside of the image
+*/
+inline int hal_ni_bilateralFilter_offset(const uchar* src_data, size_t src_step, uchar* dst_data, size_t dst_step,
+                                         int width, int height, int depth, int cn,
+                                         int margin_left, int margin_top, int margin_right, int margin_bottom,
+                                         int d, double sigma_color, double sigma_space, int border_type)
+{ return CV_HAL_ERROR_NOT_IMPLEMENTED; }
+
+//! @cond IGNORED
+#define cv_hal_bilateralFilter_offset hal_ni_bilateralFilter_offset
+//! @endcond
+
+/**
    @brief Calculates adaptive threshold
    @param src_data Source image data
    @param src_step Source image step
@@ -1127,6 +1290,24 @@ inline int hal_ni_threshold_otsu(const uchar* src_data, size_t src_step, uchar* 
 
 //! @cond IGNORED
 #define cv_hal_threshold_otsu hal_ni_threshold_otsu
+//! @endcond
+
+/**
+   @brief Calculates the distance to the closest zero pixel for each pixel of the source image
+   @param src_data Source image (8-bit single-channel) data
+   @param src_step Source image step
+   @param dst_data Destination image data
+   @param dst_step Destination image step
+   @param width Source image width
+   @param height Source image height
+   @param dst_type Type of the destination image (CV_8UC1 or CV_32FC1)
+   @param dist_type Type of distance (cv::DistanceTypes: DIST_L1, DIST_L2, DIST_C)
+   @param mask_size Size of the distance transform mask (cv::DistanceTransformMasks: DIST_MASK_3, DIST_MASK_5, DIST_MASK_PRECISE)
+*/
+inline int hal_ni_distanceTransform(const uchar* src_data, size_t src_step, uchar* dst_data, size_t dst_step, int width, int height, int dst_type, int dist_type, int mask_size) { return CV_HAL_ERROR_NOT_IMPLEMENTED; }
+
+//! @cond IGNORED
+#define cv_hal_distanceTransform hal_ni_distanceTransform
 //! @endcond
 
 /**
@@ -1277,6 +1458,51 @@ inline int hal_ni_scharr(const uchar* src_data, size_t src_step, uchar* dst_data
 //! @endcond
 
 /**
+   @brief Computes Laplacian filter
+   @param src_data Source image data
+   @param src_step Source image step
+   @param dst_data Destination image data
+   @param dst_step Destination image step
+   @param width Source image width
+   @param height Source image height
+   @param src_depth Depth of source image
+   @param dst_depth Depth of destination image
+   @param cn Number of channels
+   @param ksize Kernel size (1, 3, or 5)
+   @param border_type Border type
+   @param border_value Border value for CONSTANT
+ */
+inline int hal_ni_laplacian(const uchar* src_data, size_t src_step, uchar* dst_data, size_t dst_step, int width, int height, int src_depth, int dst_depth, int cn, int ksize, int border_type, uchar border_value)  { return CV_HAL_ERROR_NOT_IMPLEMENTED;}
+
+//! @cond IGNORED
+#define cv_hal_laplacian hal_ni_laplacian
+//! @endcond
+
+/**
+   @brief Compute spatial gradient (Sobel X and Y simultaneously).
+   @param src_data Source image data (8-bit single channel)
+   @param src_step Source image step
+   @param dx_data  Destination X-gradient data (16-bit signed)
+   @param dx_step  Destination X-gradient step
+   @param dy_data  Destination Y-gradient data (16-bit signed)
+   @param dy_step  Destination Y-gradient step
+   @param width    Image width
+   @param height   Image height
+   @param ksize    Kernel size (must be 3)
+   @param border_type Border type (BORDER_DEFAULT or BORDER_REPLICATE)
+*/
+inline int hal_ni_spatialGradient(const uchar* src_data, size_t src_step,
+                                   short* dx_data, size_t dx_step,
+                                   short* dy_data, size_t dy_step,
+                                   int width, int height,
+                                   int ksize, int border_type)
+{ return CV_HAL_ERROR_NOT_IMPLEMENTED; }
+
+//! @cond IGNORED
+#define cv_hal_spatialGradient hal_ni_spatialGradient
+//! @endcond
+
+/**
    @brief Perform Gaussian Blur and downsampling for input tile.
    @param depth Depths of source and destination image
    @param src_data Source image data
@@ -1364,6 +1590,27 @@ inline int hal_ni_canny(const uchar* src_data, size_t src_step, uchar* dst_data,
 //! @endcond
 
 /**
+   @brief Canny edge detector from image derivatives
+   @param dx_data Source image x-derivative data
+   @param dx_step Source image x-derivative step
+   @param dy_data Source image y-derivative data
+   @param dy_step Source image y-derivative step
+   @param dst_data Destination image data
+   @param dst_step Destination image step
+   @param width Source image width
+   @param height Source image height
+   @param cn Number of channels
+   @param lowThreshold low hresholds value
+   @param highThreshold high thresholds value
+   @param L2gradient Flag, indicating use L2 or L1 norma.
+*/
+inline int hal_ni_canny_deriv(const short* dx_data, size_t dx_step, const short* dy_data, size_t dy_step, uchar* dst_data, size_t dst_step, int width, int height, int cn, double lowThreshold, double highThreshold, bool L2gradient) { return CV_HAL_ERROR_NOT_IMPLEMENTED; }
+
+//! @cond IGNORED
+#define cv_hal_canny_deriv hal_ni_canny_deriv
+//! @endcond
+
+/**
    @brief Calculates all of the moments up to the third order of a polygon or rasterized shape for image
    @param src_data Source image data
    @param src_step Source image step
@@ -1413,6 +1660,32 @@ inline int hal_ni_calcHist(const uchar* src_data, size_t src_step, int src_type,
 
 //! @cond IGNORED
 #define cv_hal_calcHist hal_ni_calcHist
+//! @endcond
+
+/**
+   @brief Compares a template against overlapped image regions.
+   @param src_data Source image (single-channel, CV_8U or CV_32F) data
+   @param src_step Source image step
+   @param src_width Source image width
+   @param src_height Source image height
+   @param templ_data Template image data (same type as source)
+   @param templ_step Template image step
+   @param templ_width Template image width
+   @param templ_height Template image height
+   @param result_data Destination map data (single-channel CV_32F, size (src_width-templ_width+1) x (src_height-templ_height+1))
+   @param result_step Destination map step
+   @param depth Depth of source and template images (CV_8U or CV_32F)
+   @param cn Number of channels
+   @param method Comparison method (cv::TemplateMatchModes)
+   @sa matchTemplate
+*/
+inline int hal_ni_matchTemplate(const uchar* src_data, size_t src_step, int src_width, int src_height,
+                                const uchar* templ_data, size_t templ_step, int templ_width, int templ_height,
+                                float* result_data, size_t result_step, int depth, int cn, int method)
+{ return CV_HAL_ERROR_NOT_IMPLEMENTED; }
+
+//! @cond IGNORED
+#define cv_hal_matchTemplate hal_ni_matchTemplate
 //! @endcond
 
 //! @}

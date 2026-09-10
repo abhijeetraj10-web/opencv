@@ -1033,9 +1033,19 @@ bool CvCaptureFile::setProperty_(int property_id, double value) {
             t.value = value * t.timescale / 1000;
             retval = setupReadingAt(t);
             break;
-        case cv::CAP_PROP_POS_FRAMES:
-            retval = mAssetTrack.nominalFrameRate > 0 ? setupReadingAt(CMTimeMake(value, mAssetTrack.nominalFrameRate)) : false;
+        case cv::CAP_PROP_POS_FRAMES: {
+            // Build the seek CMTime from the track's native rational frame
+            // duration so non-integer rates (e.g. 23.976 = 24000/1001) are exact.
+            CMTime frameDuration = mAssetTrack.minFrameDuration;
+            if (frameDuration.timescale > 0 && frameDuration.value > 0) {
+                retval = setupReadingAt(CMTimeMultiply(frameDuration, (int32_t)value));
+            } else if (mAssetTrack.nominalFrameRate > 0) {
+                retval = setupReadingAt(CMTimeMake(value, mAssetTrack.nominalFrameRate));
+            } else {
+                retval = false;
+            }
             break;
+        }
         case cv::CAP_PROP_POS_AVI_RATIO:
             t = mAsset.duration;
             t.value = round(t.value * value);
@@ -1201,7 +1211,21 @@ CvVideoWriter_AVFoundation::~CvVideoWriter_AVFoundation() {
     if (mMovieWriterInput && mMovieWriter && mMovieWriterAdaptor)
     {
         [mMovieWriterInput markAsFinished];
-        [mMovieWriter finishWriting];
+
+        // Use finishWritingWithCompletionHandler + semaphore to synchronously
+        // wait for the async completion block to finish, avoiding a race
+        // condition where NSOperation KVO observer blocks are dispatched
+        // asynchronously to GCD worker threads and may access already-released
+        // objects after the autorelease pool is drained.
+        // Replaces deprecated finishWriting (sync) which falsely appears safe
+        // but does NOT wait for internal NSOperation KVO callbacks to complete.
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        [mMovieWriter finishWritingWithCompletionHandler:^{
+            dispatch_semaphore_signal(sem);
+        }];
+        dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+        dispatch_release(sem);
+
         [mMovieWriter release];
         [mMovieWriterInput release];
         [mMovieWriterAdaptor release];

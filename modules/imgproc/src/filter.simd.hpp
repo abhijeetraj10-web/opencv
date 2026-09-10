@@ -43,6 +43,7 @@
 #include "precomp.hpp"
 #include "opencv2/core/hal/intrin.hpp"
 #include "filter.hpp"
+#include "opencv2/core/utils/tls.hpp"
 
 #include <cstddef>
 
@@ -296,11 +297,294 @@ int FilterEngine__proceed(FilterEngine& this_, const uchar* src, int srcstep, in
     return dy;
 }
 
+// Lightweight tile border fill, templated on element size (bytes) so the
+// compiler can inline and optimize memcpy for common fixed sizes (1, 2, 4 …).
+// Avoids the full cv::copyMakeBorder() overhead: no OpenCL/IPP dispatch,
+// no Mat header re-allocation, and a single AutoBuffer for the border table.
+template<int esz>
+static void fillTileBorder(
+    const uchar* src, size_t srcstep, int src_w, int src_h,
+    uchar*       dst, size_t dststep,
+    int pad_top, int pad_bottom, int pad_left, int pad_right,
+    int borderType, const uchar* constVal)
+{
+    const int dst_w = src_w + pad_left + pad_right;
+
+    // ── Left/right column offset table (byte offsets into a source row) ────────
+    AutoBuffer<int> _tab(pad_left + pad_right);
+    int* tab = _tab.data();
+    for (int i = 0; i < pad_left; i++)
+        tab[i] = borderInterpolate(i - pad_left, src_w, borderType) * esz;
+    for (int i = 0; i < pad_right; i++)
+        tab[pad_left + i] = borderInterpolate(src_w + i, src_w, borderType) * esz;
+
+    // For BORDER_CONSTANT top/bottom rows, pre-build a full-width fill row.
+    AutoBuffer<uchar> _constRow;
+    uchar* constRow = nullptr;
+    if (borderType == BORDER_CONSTANT && (pad_top > 0 || pad_bottom > 0))
+    {
+        _constRow.allocate(dst_w * esz);
+        constRow = _constRow.data();
+        for (int x = 0; x < dst_w; x++)
+            memcpy(constRow + x * esz, constVal, esz);
+    }
+
+    // ── Interior rows ─────────────────────────────────────────────────────────
+    uchar* dstRow = dst + pad_top * dststep;
+    for (int r = 0; r < src_h; r++, dstRow += dststep, src += srcstep)
+    {
+        // Copy source pixels into the interior portion of the row.
+        memcpy(dstRow + pad_left * esz, src, src_w * esz);
+
+        if (borderType == BORDER_CONSTANT)
+        {
+            for (int i = 0; i < pad_left; i++)
+                memcpy(dstRow + i * esz, constVal, esz);
+            for (int i = 0; i < pad_right; i++)
+                memcpy(dstRow + (pad_left + src_w + i) * esz, constVal, esz);
+        }
+        else
+        {
+            for (int i = 0; i < pad_left; i++)
+                memcpy(dstRow + i * esz, src + tab[i], esz);
+            for (int i = 0; i < pad_right; i++)
+                memcpy(dstRow + (pad_left + src_w + i) * esz, src + tab[pad_left + i], esz);
+        }
+    }
+
+    // ── Top rows ──────────────────────────────────────────────────────────────
+    for (int r = 0; r < pad_top; r++)
+    {
+        if (borderType == BORDER_CONSTANT)
+            memcpy(dst + r * dststep, constRow, dst_w * esz);
+        else
+        {
+            int j = borderInterpolate(r - pad_top, src_h, borderType);
+            memcpy(dst + r * dststep, dst + (pad_top + j) * dststep, dst_w * esz);
+        }
+    }
+
+    // ── Bottom rows ───────────────────────────────────────────────────────────
+    uchar* dstBot = dst + (pad_top + src_h) * dststep;
+    for (int r = 0; r < pad_bottom; r++)
+    {
+        if (borderType == BORDER_CONSTANT)
+            memcpy(dstBot + r * dststep, constRow, dst_w * esz);
+        else
+        {
+            int j = borderInterpolate(src_h + r, src_h, borderType);
+            memcpy(dstBot + r * dststep, dst + (pad_top + j) * dststep, dst_w * esz);
+        }
+    }
+}
+
+class TiledFilterInvoker : public ParallelLoopBody
+{
+    struct TiledFilterBuffers {
+        Mat padded_tile;
+        Mat hbuf;
+    };
+
+public:
+    TiledFilterInvoker(FilterEngine& _fe, const Mat& _src, Mat& _dst, int _tileSize = 128)
+        : fe(_fe), src(_src), dst(_dst), tileSize(_tileSize)
+    {
+        tilesX = (dst.cols + tileSize - 1) / tileSize;
+    }
+
+    virtual void operator() (const Range& range) const CV_OVERRIDE
+    {
+        int ax = fe.anchor.x, kwidth = fe.ksize.width;
+        int ay = fe.anchor.y, kheight = fe.ksize.height;
+        int dx1 = ax, dx2 = kwidth - ax - 1;
+        int dy1 = ay, dy2 = kheight - ay - 1;
+
+        int borderType = fe.rowBorderType;
+        int cn = CV_MAT_CN(fe.srcType);
+        bool isSep = fe.isSeparable();
+
+        TiledFilterBuffers& tls = tlsData.getRef();
+
+        for (int i = range.start; i < range.end; i++)
+        {
+            int ty = i / tilesX;
+            int tx = i % tilesX;
+
+            int dst_x = tx * tileSize;
+            int dst_y = ty * tileSize;
+            int w = std::min(tileSize, dst.cols - dst_x);
+            int h = std::min(tileSize, dst.rows - dst_y);
+
+            Size wholeSize;
+            Point ofs;
+            src.locateROI(wholeSize, ofs);
+
+            // Parent coordinates.
+            int src_x1 = ofs.x + dst_x - dx1, src_y1 = ofs.y + dst_y - dy1;
+            int src_x2 = ofs.x + dst_x + w + dx2,
+                src_y2 = ofs.y + dst_y + h + dy2;
+
+            int pad_top    = std::max(0, -src_y1);
+            int pad_bottom = std::max(0, src_y2 - wholeSize.height);
+            int pad_left   = std::max(0, -src_x1);
+            int pad_right = std::max(0, src_x2 - wholeSize.width);
+
+            Mat src_region = src(Rect(dst_x, dst_y, w, h)).adjustROI(dy1, dy2, dx1, dx2);
+
+            Mat tile_mat;
+            if (pad_top == 0 && pad_bottom == 0 && pad_left == 0 && pad_right == 0)
+            {
+                tile_mat = src_region;
+            }
+            else
+            {
+                int padded_w = w + dx1 + dx2;
+                int padded_h = h + dy1 + dy2;
+                if (tls.padded_tile.cols < padded_w || tls.padded_tile.rows < padded_h || tls.padded_tile.type() != fe.srcType)
+                    tls.padded_tile.create(padded_h, padded_w, fe.srcType);
+
+                tile_mat = tls.padded_tile(Rect(0, 0, padded_w, padded_h));
+
+                const int esz = (int)CV_ELEM_SIZE(fe.srcType);
+                const uchar* cval = fe.constBorderValue.empty() ? nullptr : &fe.constBorderValue[0];
+
+#define FILL_BORDER(E) fillTileBorder<E>(src_region.ptr(), (size_t)src_region.step, \
+    src_region.cols, src_region.rows, tile_mat.ptr(), (size_t)tile_mat.step, \
+    pad_top, pad_bottom, pad_left, pad_right, borderType, cval)
+                switch (esz)
+                {
+                case 1:  FILL_BORDER(1);  break;
+                case 2:  FILL_BORDER(2);  break;
+                case 3:  FILL_BORDER(3);  break;
+                case 4:  FILL_BORDER(4);  break;
+                case 6:  FILL_BORDER(6);  break;
+                case 8:  FILL_BORDER(8);  break;
+                case 12: FILL_BORDER(12); break;
+                case 16: FILL_BORDER(16); break;
+                default:
+                {
+                    // Generic fallback for exotic element sizes.
+                    Scalar bv = Scalar::all(0);
+                    if (!fe.constBorderValue.empty())
+                    {
+                        const uchar* bptr = &fe.constBorderValue[0];
+                        int depth = CV_MAT_DEPTH(fe.srcType);
+                        for (int k = 0; k < cn; k++)
+                        {
+                            switch(depth)
+                            {
+                            case CV_8U:  bv[k] = bptr[k]; break;
+                            case CV_8S:  bv[k] = ((const schar*)bptr)[k]; break;
+                            case CV_16U: bv[k] = ((const ushort*)bptr)[k]; break;
+                            case CV_16S: bv[k] = ((const short*)bptr)[k]; break;
+                            case CV_32S: bv[k] = ((const int*)bptr)[k]; break;
+                            case CV_32F: bv[k] = ((const float*)bptr)[k]; break;
+                            case CV_64F: bv[k] = ((const double*)bptr)[k]; break;
+                            default: bv[k] = bptr[k];
+                            }
+                        }
+                    }
+                    copyMakeBorder(src_region, tile_mat, pad_top, pad_bottom, pad_left, pad_right, borderType, bv);
+                }
+                }
+#undef FILL_BORDER
+            }
+
+            uchar* dst_ptr = dst.ptr(dst_y) + dst_x * dst.elemSize();
+            if (isSep)
+            {
+                int hstep = (int)alignSize(w * CV_ELEM_SIZE(fe.bufType), VEC_ALIGN);
+                if (tls.hbuf.rows < tile_mat.rows || tls.hbuf.cols < hstep)
+                    tls.hbuf.create(tile_mat.rows, hstep, CV_8U);
+
+                uchar* hbuf = tls.hbuf.ptr();
+                for (int r = 0; r < tile_mat.rows; r++)
+                    (*fe.rowFilter)(tile_mat.ptr(r), hbuf + r * hstep, w, cn);
+
+                AutoBuffer<const uchar*> _brows(h + kheight - 1);
+                const uchar** brows = _brows.data();
+                for (int m = 0; m < h + kheight - 1; m++)
+                    brows[m] = hbuf + m * hstep;
+
+                (*fe.columnFilter)(brows, dst_ptr, (int)dst.step, h, w * cn);
+            }
+            else
+            {
+                AutoBuffer<const uchar*> _brows(h + kheight - 1);
+                const uchar** brows = _brows.data();
+                for (int k = 0; k < h + kheight - 1; k++)
+                    brows[k] = tile_mat.ptr(k);
+
+                (*fe.filter2D)(brows, dst_ptr, (int)dst.step, h, w, cn);
+            }
+        }
+    }
+
+private:
+    FilterEngine& fe;
+    const Mat& src;
+    Mat& dst;
+    int tileSize;
+    int tilesX;
+    mutable TLSData<TiledFilterBuffers> tlsData;
+};
+
 void FilterEngine__apply(FilterEngine& this_, const Mat& src, Mat& dst, const Size& wsz, const Point& ofs)
 {
     CV_INSTRUMENT_REGION();
 
     CV_DbgAssert(src.type() == this_.srcType && dst.type() == this_.dstType);
+
+    // Tiled Fast Path for stateless parallel filters on large images.
+    int nthreads = cv::getNumThreads();
+    if (this_.isStateless() && nthreads > 1 &&
+        (size_t)src.total() >= std::max((size_t)1024 * 1024, (size_t)nthreads * 64 * 1024) &&
+        this_.rowBorderType == this_.columnBorderType)
+    {
+        // Robust cloning for in-place/overlapping operations with ROI support.
+        Size resolved_wsz = wsz;
+        Point resolved_ofs = ofs;
+        if (resolved_wsz.width < 0) {
+            src.locateROI(resolved_wsz, resolved_ofs);
+        }
+
+        bool overlap = (src.data <= dst.dataend && dst.data <= src.dataend);
+        Mat src_copy;
+        if (resolved_wsz == src.size()) {
+            src_copy = overlap ? src.clone() : src;
+        } else {
+            // In case of ROI.
+            Mat parent(resolved_wsz, src.type(),
+                       (void*)(src.data - resolved_ofs.y * src.step -
+                               resolved_ofs.x * src.elemSize()),
+                       src.step);
+            if (overlap) {
+                int dx1 = this_.anchor.x, dx2 = this_.ksize.width - dx1 - 1;
+                int dy1 = this_.anchor.y, dy2 = this_.ksize.height - dy1 - 1;
+
+                int p_x1 = std::max(0, resolved_ofs.x - dx1);
+                int p_y1 = std::max(0, resolved_ofs.y - dy1);
+
+                // Clone the required region only.
+                Mat required_region = parent(Rect(resolved_ofs, src.size())).adjustROI(dy1, dy2, dx1, dx2).clone();
+
+                src_copy = required_region(Rect(resolved_ofs - Point(p_x1, p_y1), src.size()));
+            } else {
+                // Actually src_copy = src but makes sure src_copy is seen as a sub-matrix
+                // because sepFilter2D creates a submatrix on the fly without having it be
+                // an official sub-matrix (which would make locateROI fail in TiledFilterInvoker)
+                src_copy = parent(Rect(resolved_ofs, src.size()));
+            }
+        }
+
+        // Heuristic: Balance L2 cache locality (128) vs parallel load balancing (64).
+        int tileSize = (src.total() < (size_t)nthreads * 128 * 128 * 4) ? 64 : 128;
+        int totalTiles = ((dst.cols + tileSize - 1) / tileSize) * ((dst.rows + tileSize - 1) / tileSize);
+
+        TiledFilterInvoker invoker(this_, src_copy, dst, tileSize);
+        parallel_for_(Range(0, totalTiles), invoker);
+        return;
+    }
 
     FilterEngine__start(this_, wsz, src.size(), ofs);
     int y = this_.startY - ofs.y;
@@ -512,13 +796,14 @@ struct RowVec_8u32f
 
 struct SymmRowSmallVec_8u32s
 {
-    SymmRowSmallVec_8u32s() { smallValues = false; symmetryType = 0; }
+    SymmRowSmallVec_8u32s() { smallValues = false; int16Sums = false; symmetryType = 0; }
     SymmRowSmallVec_8u32s( const Mat& _kernel, int _symmetryType )
     {
         kernel = _kernel;
         symmetryType = _symmetryType;
         smallValues = true;
         int k, ksize = kernel.rows + kernel.cols - 1;
+        int absSum = 0;
         for( k = 0; k < ksize; k++ )
         {
             int v = kernel.ptr<int>()[k];
@@ -527,7 +812,9 @@ struct SymmRowSmallVec_8u32s
                 smallValues = false;
                 break;
             }
+            absSum += std::abs(v);
         }
+        int16Sums = smallValues && absSum*UCHAR_MAX <= SHRT_MAX;
     }
 
     int operator()(const uchar* src, uchar* _dst, int width, int cn) const
@@ -660,34 +947,46 @@ struct SymmRowSmallVec_8u32s
             }
             else if( _ksize == 5 )
             {
-                if( kx[0] == -2 && kx[1] == 0 && kx[2] == 1 )
+                if( int16Sums )
                 {
+                    v_int16 k0 = vx_setall_s16((short)kx[0]);
+                    v_int16 k1 = vx_setall_s16((short)kx[1]);
+                    v_int16 k2 = vx_setall_s16((short)kx[2]);
                     for( ; i <= width - VTraits<v_uint8>::vlanes(); i += VTraits<v_uint8>::vlanes(), src += VTraits<v_uint8>::vlanes() )
                     {
-                        v_uint16 x0l, x0h, x1l, x1h, x2l, x2h;
-                        v_expand(vx_load(src - 2*cn), x0l, x0h);
-                        v_expand(vx_load(src), x1l, x1h);
-                        v_expand(vx_load(src + 2*cn), x2l, x2h);
-                        x1l = v_sub_wrap(v_add_wrap(x0l, x2l), v_add_wrap(x1l, x1l));
-                        x1h = v_sub_wrap(v_add_wrap(x0h, x2h), v_add_wrap(x1h, x1h));
-                        v_store(dst + i, v_expand_low(v_reinterpret_as_s16(x1l)));
-                        v_store(dst + i + VTraits<v_int32>::vlanes(), v_expand_high(v_reinterpret_as_s16(x1l)));
-                        v_store(dst + i + 2*VTraits<v_int32>::vlanes(), v_expand_low(v_reinterpret_as_s16(x1h)));
-                        v_store(dst + i + 3*VTraits<v_int32>::vlanes(), v_expand_high(v_reinterpret_as_s16(x1h)));
+                        v_uint16 c0, c1, a0, a1, b0, b1, d0, d1, e0, e1;
+                        v_expand(vx_load(src), c0, c1);
+                        v_expand(vx_load(src - cn), a0, a1);
+                        v_expand(vx_load(src + cn), b0, b1);
+                        v_expand(vx_load(src - 2*cn), d0, d1);
+                        v_expand(vx_load(src + 2*cn), e0, e1);
+
+                        v_int16 sl = v_add_wrap(v_add_wrap(v_mul_wrap(v_reinterpret_as_s16(c0), k0),
+                                                           v_mul_wrap(v_reinterpret_as_s16(v_add_wrap(a0, b0)), k1)),
+                                                v_mul_wrap(v_reinterpret_as_s16(v_add_wrap(d0, e0)), k2));
+                        v_int16 sh = v_add_wrap(v_add_wrap(v_mul_wrap(v_reinterpret_as_s16(c1), k0),
+                                                           v_mul_wrap(v_reinterpret_as_s16(v_add_wrap(a1, b1)), k1)),
+                                                v_mul_wrap(v_reinterpret_as_s16(v_add_wrap(d1, e1)), k2));
+
+                        v_store(dst + i, v_expand_low(sl));
+                        v_store(dst + i + VTraits<v_int32>::vlanes(), v_expand_high(sl));
+                        v_store(dst + i + 2*VTraits<v_int32>::vlanes(), v_expand_low(sh));
+                        v_store(dst + i + 3*VTraits<v_int32>::vlanes(), v_expand_high(sh));
                     }
                     if( i <= width - VTraits<v_uint16>::vlanes() )
                     {
-                        v_uint16 x = vx_load_expand(src);
-                        x = v_sub_wrap(v_add_wrap(vx_load_expand(src - 2*cn), vx_load_expand(src + 2*cn)), v_add_wrap(x, x));
-                        v_store(dst + i, v_expand_low(v_reinterpret_as_s16(x)));
-                        v_store(dst + i + VTraits<v_int32>::vlanes(), v_expand_high(v_reinterpret_as_s16(x)));
+                        v_int16 s = v_add_wrap(v_add_wrap(v_mul_wrap(v_reinterpret_as_s16(vx_load_expand(src)), k0),
+                                                          v_mul_wrap(v_reinterpret_as_s16(v_add_wrap(vx_load_expand(src - cn), vx_load_expand(src + cn))), k1)),
+                                               v_mul_wrap(v_reinterpret_as_s16(v_add_wrap(vx_load_expand(src - 2*cn), vx_load_expand(src + 2*cn))), k2));
+                        v_store(dst + i, v_expand_low(s));
+                        v_store(dst + i + VTraits<v_int32>::vlanes(), v_expand_high(s));
                         i += VTraits<v_uint16>::vlanes(); src += VTraits<v_uint16>::vlanes();
                     }
                     if( i <= width - VTraits<v_uint32>::vlanes() )
                     {
-                        v_int32 x = v_reinterpret_as_s32(vx_load_expand_q(src));
-                        x = v_sub(v_reinterpret_as_s32(v_add(vx_load_expand_q(src - 2 * cn), vx_load_expand_q(src + 2 * cn))), v_add(x, x));
-                        v_store(dst + i, x);
+                        v_store(dst + i, v_muladd(v_reinterpret_as_s32(vx_load_expand_q(src)), vx_setall_s32(kx[0]),
+                                         v_muladd(v_reinterpret_as_s32(v_add(vx_load_expand_q(src - cn), vx_load_expand_q(src + cn))), vx_setall_s32(kx[1]),
+                                                  v_mul(v_reinterpret_as_s32(v_add(vx_load_expand_q(src - 2 * cn), vx_load_expand_q(src + 2 * cn))), vx_setall_s32(kx[2])))));
                         i += VTraits<v_uint32>::vlanes();
                     }
                 }
@@ -1005,6 +1304,7 @@ struct SymmRowSmallVec_8u32s
     Mat kernel;
     int symmetryType;
     bool smallValues;
+    bool int16Sums;
 };
 
 
@@ -1204,6 +1504,85 @@ struct SymmColumnVec_32f8u
     }
     int symmetryType;
     float delta;
+    Mat kernel;
+};
+
+struct SymmColumnVec_32s16s
+{
+    SymmColumnVec_32s16s() { symmetryType = 0; delta = 0; }
+    SymmColumnVec_32s16s(const Mat& _kernel, int _symmetryType, int, double _delta)
+    {
+        symmetryType = _symmetryType;
+        kernel = _kernel;
+        delta = saturate_cast<int>(_delta);
+        CV_Assert( (symmetryType & (KERNEL_SYMMETRICAL | KERNEL_ASYMMETRICAL)) != 0 );
+    }
+
+    int operator()(const uchar** _src, uchar* _dst, int width) const
+    {
+        CV_INSTRUMENT_REGION();
+
+        int _ksize = kernel.rows + kernel.cols - 1;
+        if( _ksize == 1 )
+            return 0;
+        int ksize2 = _ksize/2;
+        const int* ky = kernel.ptr<int>() + ksize2;
+        int i = 0, k;
+        bool symmetrical = (symmetryType & KERNEL_SYMMETRICAL) != 0;
+        const int** src = (const int**)_src;
+        short* dst = (short*)_dst;
+
+        const int step = VTraits<v_int32>::vlanes();
+        v_int32 d4 = vx_setall_s32(delta);
+
+        if( symmetrical )
+        {
+            v_int32 f0 = vx_setall_s32(ky[0]);
+            for( ; i <= width - 2*VTraits<v_int16>::vlanes(); i += 2*VTraits<v_int16>::vlanes() )
+            {
+                const int* S = src[0] + i;
+                v_int32 s0 = v_muladd(vx_load(S), f0, d4);
+                v_int32 s1 = v_muladd(vx_load(S + step), f0, d4);
+                v_int32 s2 = v_muladd(vx_load(S + 2*step), f0, d4);
+                v_int32 s3 = v_muladd(vx_load(S + 3*step), f0, d4);
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    v_int32 f = vx_setall_s32(ky[k]);
+                    const int* S0 = src[k] + i;
+                    const int* S1 = src[-k] + i;
+                    s0 = v_muladd(v_add(vx_load(S0), vx_load(S1)), f, s0);
+                    s1 = v_muladd(v_add(vx_load(S0 + step), vx_load(S1 + step)), f, s1);
+                    s2 = v_muladd(v_add(vx_load(S0 + 2*step), vx_load(S1 + 2*step)), f, s2);
+                    s3 = v_muladd(v_add(vx_load(S0 + 3*step), vx_load(S1 + 3*step)), f, s3);
+                }
+                v_store(dst + i, v_pack(s0, s1));
+                v_store(dst + i + VTraits<v_int16>::vlanes(), v_pack(s2, s3));
+            }
+        }
+        else
+        {
+            for( ; i <= width - 2*VTraits<v_int16>::vlanes(); i += 2*VTraits<v_int16>::vlanes() )
+            {
+                v_int32 s0 = d4, s1 = d4, s2 = d4, s3 = d4;
+                for( k = 1; k <= ksize2; k++ )
+                {
+                    v_int32 f = vx_setall_s32(ky[k]);
+                    const int* S0 = src[k] + i;
+                    const int* S1 = src[-k] + i;
+                    s0 = v_muladd(v_sub(vx_load(S0), vx_load(S1)), f, s0);
+                    s1 = v_muladd(v_sub(vx_load(S0 + step), vx_load(S1 + step)), f, s1);
+                    s2 = v_muladd(v_sub(vx_load(S0 + 2*step), vx_load(S1 + 2*step)), f, s2);
+                    s3 = v_muladd(v_sub(vx_load(S0 + 3*step), vx_load(S1 + 3*step)), f, s3);
+                }
+                v_store(dst + i, v_pack(s0, s1));
+                v_store(dst + i + VTraits<v_int16>::vlanes(), v_pack(s2, s3));
+            }
+        }
+        return i;
+    }
+
+    int symmetryType;
+    int delta;
     Mat kernel;
 };
 
@@ -2372,6 +2751,7 @@ typedef SymmRowSmallNoVec SymmRowSmallVec_8u32s;
 typedef SymmRowSmallNoVec SymmRowSmallVec_32f;
 typedef ColumnNoVec SymmColumnVec_32s8u;
 typedef ColumnNoVec SymmColumnVec_32f8u;
+typedef ColumnNoVec SymmColumnVec_32s16s;
 typedef ColumnNoVec SymmColumnVec_32f16s;
 typedef ColumnNoVec SymmColumnVec_32f;
 typedef SymmColumnSmallNoVec SymmColumnSmallVec_32s16s;
@@ -2397,6 +2777,8 @@ template<typename ST, typename DT, class VecOp> struct RowFilter : public BaseRo
                    (kernel.rows == 1 || kernel.cols == 1));
         vecOp = _vecOp;
     }
+
+    bool isStateless() const CV_OVERRIDE { return true; }
 
     void operator()(const uchar* src, uchar* dst, int width, int cn) CV_OVERRIDE
     {
@@ -2598,6 +2980,8 @@ template<class CastOp, class VecOp> struct ColumnFilter : public BaseColumnFilte
         CV_Assert( kernel.type() == DataType<ST>::type &&
                    (kernel.rows == 1 || kernel.cols == 1));
     }
+
+    bool isStateless() const CV_OVERRIDE { return true; }
 
     void operator()(const uchar** src, uchar* dst, int dststep, int count, int width) CV_OVERRIDE
     {
@@ -3075,8 +3459,9 @@ Ptr<BaseColumnFilter> getLinearColumnFilter(
             return makePtr<SymmColumnFilter<Cast<double, ushort>, ColumnNoVec> >
                 (kernel, anchor, delta, symmetryType);
         if( ddepth == CV_16S && sdepth == CV_32S )
-            return makePtr<SymmColumnFilter<Cast<int, short>, ColumnNoVec> >
-                (kernel, anchor, delta, symmetryType);
+            return makePtr<SymmColumnFilter<Cast<int, short>, SymmColumnVec_32s16s> >
+                (kernel, anchor, delta, symmetryType, Cast<int, short>(),
+                SymmColumnVec_32s16s(kernel, symmetryType, bits, delta));
         if( ddepth == CV_16S && sdepth == CV_32F )
             return makePtr<SymmColumnFilter<Cast<float, short>, SymmColumnVec_32f16s> >
                  (kernel, anchor, delta, symmetryType, Cast<float, short>(),
@@ -3116,16 +3501,18 @@ template<typename ST, class CastOp, class VecOp> struct Filter2D : public BaseFi
         vecOp = _vecOp;
         CV_Assert( _kernel.type() == DataType<KT>::type );
         preprocess2DKernel( _kernel, coords, coeffs );
-        ptrs.resize( coords.size() );
     }
+
+    bool isStateless() const CV_OVERRIDE { return true; }
 
     void operator()(const uchar** src, uchar* dst, int dststep, int count, int width, int cn) CV_OVERRIDE
     {
         KT _delta = delta;
         const Point* pt = &coords[0];
         const KT* kf = (const KT*)&coeffs[0];
-        const ST** kp = (const ST**)&ptrs[0];
         int i, k, nz = (int)coords.size();
+        AutoBuffer<const ST*> _kp(nz);
+        const ST** kp = _kp.data();
         CastOp castOp = castOp0;
 
         width *= cn;
@@ -3168,7 +3555,6 @@ template<typename ST, class CastOp, class VecOp> struct Filter2D : public BaseFi
 
     std::vector<Point> coords;
     std::vector<uchar> coeffs;
-    std::vector<uchar*> ptrs;
     KT delta;
     CastOp castOp0;
     VecOp vecOp;

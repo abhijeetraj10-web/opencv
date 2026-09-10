@@ -258,34 +258,6 @@ bool CvLevMarq::updateAlt( const CvMat*& _param, CvMat*& _JtJ, CvMat*& _JtErr, d
     return true;
 }
 
-namespace {
-static void subMatrix(const cv::Mat& src, cv::Mat& dst, const std::vector<uchar>& cols,
-                      const std::vector<uchar>& rows) {
-    int nonzeros_cols = cv::countNonZero(cols);
-    cv::Mat tmp(src.rows, nonzeros_cols, CV_64FC1);
-
-    for (int i = 0, j = 0; i < (int)cols.size(); i++)
-    {
-        if (cols[i])
-        {
-            src.col(i).copyTo(tmp.col(j++));
-        }
-    }
-
-    int nonzeros_rows  = cv::countNonZero(rows);
-    dst.create(nonzeros_rows, nonzeros_cols, CV_64FC1);
-    for (int i = 0, j = 0; i < (int)rows.size(); i++)
-    {
-        if (rows[i])
-        {
-            tmp.row(i).copyTo(dst.row(j++));
-        }
-    }
-}
-
-}
-
-
 void CvLevMarq::step()
 {
     using namespace cv;
@@ -308,8 +280,8 @@ void CvLevMarq::step()
     Mat _JtErr = cvarrToMat(JtJV);
     Mat_<double> nonzero_param = cvarrToMat(JtJW);
 
-    subMatrix(cvarrToMat(JtErr), _JtErr, std::vector<uchar>(1, 1), _mask);
-    subMatrix(_JtJ, _JtJN, _mask, _mask);
+    subMatrixWithMasks(cvarrToMat(JtErr), _JtErr, std::vector<uchar>(1, 1), _mask, /*resize_dst=*/false);
+    subMatrixWithMasks(_JtJ, _JtJN, _mask, _mask, /*resize_dst=*/false);
 
     if( !err )
         completeSymm( _JtJN, completeSymmFlag );

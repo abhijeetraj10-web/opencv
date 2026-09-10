@@ -327,6 +327,7 @@ protected:
 //==================================================================================================
 
 Ptr<IVideoCapture> cvCreateFileCapture_FFMPEG_proxy(const std::string &filename, const VideoCaptureParameters& params);
+Ptr<IVideoCapture> cvCreateCameraCapture_FFMPEG_proxy(int index, const VideoCaptureParameters& params);
 Ptr<IVideoCapture> cvCreateStreamCapture_FFMPEG_proxy(const Ptr<IStreamReader>& stream, const VideoCaptureParameters& params);
 Ptr<IVideoWriter> cvCreateVideoWriter_FFMPEG_proxy(const std::string& filename, int fourcc,
                                                    double fps, const Size& frameSize,
@@ -366,7 +367,7 @@ Ptr<IVideoCapture> create_V4L_capture_file(const std::string &filename);
 Ptr<IVideoCapture> create_OpenNI2_capture_cam( int index );
 Ptr<IVideoCapture> create_OpenNI2_capture_file( const std::string &filename );
 
-Ptr<IVideoCapture> create_Images_capture(const std::string &filename);
+Ptr<IVideoCapture> create_Images_capture(const std::string& filename, const VideoCaptureParameters& params);
 Ptr<IVideoWriter> create_Images_writer(const std::string& filename, int fourcc,
                                        double fps, const Size& frameSize,
                                        const VideoWriterParameters& params);
@@ -383,6 +384,7 @@ Ptr<IVideoCapture> create_XIMEA_capture_file( const std::string &serialNumber );
 Ptr<IVideoCapture> create_ueye_camera(int camera);
 
 Ptr<IVideoCapture> create_Aravis_capture( int index );
+Ptr<IVideoCapture> create_Aravis_capture_by_name( const std::string &deviceName );
 
 Ptr<IVideoCapture> createMotionJpegCapture(const std::string& filename);
 Ptr<IVideoWriter> createMotionJpegWriter(const std::string& filename, int fourcc,

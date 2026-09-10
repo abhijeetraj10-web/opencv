@@ -447,6 +447,7 @@ void Mat::copyTo( OutputArray _dst ) const
     if( empty() )
     {
         _dst.release();
+        _dst.create(size(), type());
         return;
     }
 
@@ -612,6 +613,28 @@ void Mat::copyTo( OutputArray _dst, InputArray _mask ) const
 
     for( size_t i = 0; i < it.nplanes; i++, ++it )
         copymask(ptrs[0], 0, ptrs[2], 0, ptrs[1], 0, sz, &esz);
+}
+
+/* dst = src */
+void Mat::copyAt( OutputArray _dst ) const
+{
+    CV_INSTRUMENT_REGION();
+
+    Mat dst = _dst.getMat();
+    CV_CheckTrue( !dst.empty(), "dst must not be empty" );
+    CV_CheckTypeEQ(type(), dst.type(), "Make the type of dst the same as src");
+    CV_CheckEQ(size(), dst.size(), "Make the size of dst the same as src");
+    copyTo(_dst);
+}
+void Mat::copyAt( OutputArray _dst, InputArray _mask ) const
+{
+    CV_INSTRUMENT_REGION();
+
+    Mat dst = _dst.getMat();
+    CV_CheckTrue( !dst.empty(), "dst must not be empty" );
+    CV_CheckTypeEQ(type(), dst.type(), "Make the type of dst the same as src");
+    CV_CheckEQ(size(), dst.size(), "Make the size of dst the same as src");
+    copyTo(_dst, _mask);
 }
 
 
@@ -895,21 +918,18 @@ int cv::borderInterpolate( int p, int len, int borderType )
         p = p < 0 ? 0 : len - 1;
     else if( borderType == BORDER_REFLECT || borderType == BORDER_REFLECT_101 )
     {
-        int delta = borderType == BORDER_REFLECT_101;
+        const int delta = borderType == BORDER_REFLECT_101;
         if( len == 1 )
             return 0;
-        do
-        {
-            if( p < 0 )
-                p = -p - 1 + delta;
-            else
-                p = len - 1 - (p - len) - delta;
-        }
-#ifdef CV_STATIC_ANALYSIS
-        while(p < 0 || p >= len);
-#else
-        while( (unsigned)p >= (unsigned)len );
-#endif
+
+        const int64 period = 2LL * (len - delta);
+        int64 p64 = p;
+        p64 %= period;
+        if( p64 < 0 )
+            p64 += period;
+        if( p64 >= len )
+            p64 = period - p64 - 1 + delta;
+        p = (int)p64;
     }
     else if( borderType == BORDER_WRAP )
     {

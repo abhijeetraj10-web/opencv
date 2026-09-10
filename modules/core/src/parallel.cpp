@@ -449,6 +449,18 @@ namespace {
             this->ParallelLoopBodyWrapper::operator()(cv::Range(i, i + 1));
         }
     };
+
+    // PPL's default auto_partitioner silently skips whole chunks of the range on
+    // ARM64 (unfixed MSVC bug, developercommunity.visualstudio.com/t/1027444).
+    template <typename Body>
+    static inline void pplParallelFor(int first, int last, const Body& body)
+    {
+#if defined(_M_ARM64) || defined(_M_ARM64EC)
+        Concurrency::parallel_for(first, last, body, Concurrency::static_partitioner());
+#else
+        Concurrency::parallel_for(first, last, body);
+#endif
+    }
 #else
     typedef ParallelLoopBodyWrapper ProxyLoopBody;
 #endif
@@ -465,10 +477,6 @@ namespace {
 static inline int _initMaxThreads()
 {
     int maxThreads = omp_get_max_threads();
-    if (!utils::getConfigurationParameterBool("OPENCV_FOR_OPENMP_DYNAMIC_DISABLE", false))
-    {
-        omp_set_dynamic(1);
-    }
     return maxThreads;
 }
 static int numThreadsMax = _initMaxThreads();
@@ -597,18 +605,18 @@ static void parallel_for_impl(const cv::Range& range, const cv::ParallelLoopBody
 
 #elif defined WINRT
 
-        Concurrency::parallel_for(stripeRange.start, stripeRange.end, pbody);
+        pplParallelFor(stripeRange.start, stripeRange.end, pbody);
 
 #elif defined HAVE_CONCURRENCY
 
         if(!pplScheduler || pplScheduler->Id() == Concurrency::CurrentScheduler::Id())
         {
-            Concurrency::parallel_for(stripeRange.start, stripeRange.end, pbody);
+            pplParallelFor(stripeRange.start, stripeRange.end, pbody);
         }
         else
         {
             pplScheduler->Attach();
-            Concurrency::parallel_for(stripeRange.start, stripeRange.end, pbody);
+            pplParallelFor(stripeRange.start, stripeRange.end, pbody);
             Concurrency::CurrentScheduler::Detach();
         }
 

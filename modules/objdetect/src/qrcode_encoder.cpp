@@ -1359,11 +1359,11 @@ private:
     void extractCodewords(Mat& source, std::vector<uint8_t>& codewords);
     bool errorCorrection(std::vector<uint8_t>& codewords);
     bool errorCorrectionBlock(std::vector<uint8_t>& codewords);
-    void decodeSymbols(String& result);
+    bool decodeSymbols(String& result);
     void decodeNumeric(String& result);
-    void decodeAlpha(String& result);
+    bool decodeAlpha(String& result);
     void decodeByte(String& result);
-    void decodeECI(String& result);
+    bool decodeECI(String& result);
     void decodeKanji(String& result);
     void decodeStructuredAppend(String& result);
 };
@@ -1472,7 +1472,10 @@ bool QRCodeDecoderImpl::run(const Mat& straight, String& decoded_info) {
     if (!errorCorrection(bitstream.data)) {
         return false;
     }
-    decodeSymbols(decoded_info);
+    if (!decodeSymbols(decoded_info)) {
+        decoded_info = "";
+        return false;
+    }
     return true;
 }
 
@@ -1576,7 +1579,7 @@ bool QRCodeDecoderImpl::errorCorrectionBlock(std::vector<uint8_t>& codewords) {
     uint8_t b = 1;  // discrepancy from last L update
 
     std::vector<uint8_t> C(numSyndromes, 0);  // Error locator polynomial
-    std::vector<uint8_t> B(numSyndromes, 0);  // A copy of error locator from previos L update
+    std::vector<uint8_t> B(numSyndromes, 0);  // A copy of error locator from previous L update
     C[0] = B[0] = 1;
     for (size_t i = 0; i < numSyndromes; ++i) {
         CV_Assert(m + L - 1 < C.size());  // m >= 1 on any iteration
@@ -1629,9 +1632,15 @@ bool QRCodeDecoderImpl::errorCorrectionBlock(std::vector<uint8_t>& codewords) {
     std::vector<uint8_t> errEval;
     gfPolyMul(C, syndromes, errEval);
 
+    // Precompute all X values for error locations to avoid duplicated computation
+    std::vector<uint8_t> X_values(errLocs.size());
+    for (size_t j = 0; j < errLocs.size(); ++j) {
+        X_values[j] = gfPow(2, static_cast<int>(codewords.size() - 1 - errLocs[j]));
+    }
+
     for (size_t i = 0; i < errLocs.size(); ++i) {
         uint8_t numenator = 0, denominator = 0;
-        uint8_t X = gfPow(2, static_cast<int>(codewords.size() - 1 - errLocs[i]));
+        uint8_t X = X_values[i];
         uint8_t inv_X = gfDiv(1, X);
 
         for (size_t j = 0; j < L; ++j) {
@@ -1639,12 +1648,11 @@ bool QRCodeDecoderImpl::errorCorrectionBlock(std::vector<uint8_t>& codewords) {
         }
 
         // Compute demoninator as a product of (1-X_i * X_k) for i != k
-        // TODO: optimize, there is a dubplicated compute
         denominator = 1;
         for (size_t j = 0; j < errLocs.size(); ++j) {
             if (i == j)
                 continue;
-            uint8_t Xj = gfPow(2, static_cast<int>(codewords.size() - 1 - errLocs[j]));
+            uint8_t Xj = X_values[j];
             denominator = gfMul(denominator, 1 ^ gfMul(inv_X, Xj));
         }
 
@@ -1732,7 +1740,7 @@ void QRCodeDecoderImpl::extractCodewords(Mat& source, std::vector<uint8_t>& code
     }
 }
 
-void QRCodeDecoderImpl::decodeSymbols(String& result) {
+bool QRCodeDecoderImpl::decodeSymbols(String& result) {
     CV_Assert(!bitstream.empty());
 
     // Decode depends on the mode
@@ -1745,15 +1753,19 @@ void QRCodeDecoderImpl::decodeSymbols(String& result) {
         }
 
         if (currMode == 0 || bitstream.empty())
-            return;
+            return true;
         if (currMode == QRCodeEncoder::EncodeMode::MODE_NUMERIC)
             decodeNumeric(result);
-        else if (currMode == QRCodeEncoder::EncodeMode::MODE_ALPHANUMERIC)
-            decodeAlpha(result);
+        else if (currMode == QRCodeEncoder::EncodeMode::MODE_ALPHANUMERIC) {
+            if (!decodeAlpha(result))
+                return false;
+        }
         else if (currMode == QRCodeEncoder::EncodeMode::MODE_BYTE)
             decodeByte(result);
-        else if (currMode == QRCodeEncoder::EncodeMode::MODE_ECI)
-            decodeECI(result);
+        else if (currMode == QRCodeEncoder::EncodeMode::MODE_ECI) {
+            if (!decodeECI(result))
+                return false;
+        }
         else if (currMode == QRCodeEncoder::EncodeMode::MODE_KANJI)
             decodeKanji(result);
         else if (currMode == QRCodeEncoder::EncodeMode::MODE_STRUCTURED_APPEND) {
@@ -1764,6 +1776,7 @@ void QRCodeDecoderImpl::decodeSymbols(String& result) {
         else
             CV_Error(Error::StsNotImplemented, format("mode %d", currMode));
     }
+    return true;
 }
 
 void QRCodeDecoderImpl::decodeNumeric(String& result) {
@@ -1783,7 +1796,7 @@ void QRCodeDecoderImpl::decodeNumeric(String& result) {
     }
 }
 
-void QRCodeDecoderImpl::decodeAlpha(String& result) {
+bool QRCodeDecoderImpl::decodeAlpha(String& result) {
     static const char map[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
                                'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
                                'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
@@ -1793,13 +1806,18 @@ void QRCodeDecoderImpl::decodeAlpha(String& result) {
     int num = bitstream.next(version <= 9 ? 9 : (version <= 26 ? 11 : 13));
     for (int i = 0; i < num / 2; ++i) {
         int tuple = bitstream.next(11);
+        if (tuple >= 45 * 45)
+            return false;
         result += map[tuple / 45];
         result += map[tuple % 45];
     }
     if (num % 2) {
         int value = bitstream.next(6);
+        if (value >= 45)
+            return false;
         result += map[value];
     }
+    return true;
 }
 
 void QRCodeDecoderImpl::decodeByte(String& result) {
@@ -1809,7 +1827,7 @@ void QRCodeDecoderImpl::decodeByte(String& result) {
     }
 }
 
-void QRCodeDecoderImpl::decodeECI(String& result) {
+bool QRCodeDecoderImpl::decodeECI(String& result) {
     int eciAssignValue = bitstream.next(8);
     for (int i = 0; i < 8; ++i) {
         if (eciAssignValue & 1 << (7 - i))
@@ -1820,8 +1838,7 @@ void QRCodeDecoderImpl::decodeECI(String& result) {
     if (this->eci == 0) {
         this->eci = static_cast<QRCodeEncoder::ECIEncodings>(eciAssignValue);
     }
-    decodeSymbols(result);
-
+    return decodeSymbols(result);
 }
 
 void QRCodeDecoderImpl::decodeKanji(String& result) {

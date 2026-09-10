@@ -289,6 +289,88 @@ TEST(Layer_Test_Reshape, Accuracy)
     }
 }
 
+static Mat runGatherElementsLayer(const Mat& data, const Mat& indices, int axis)
+{
+    LayerParams params;
+    params.set("axis", axis);
+    Ptr<Layer> layer = LayerFactory::createLayerInstance("GatherElements", params);
+
+    std::vector<Mat> inputs{data.clone(), indices.clone()};
+    std::vector<MatShape> inputShapes{shape(inputs[0]), shape(inputs[1])};
+    std::vector<MatShape> outputShapes, internalShapes;
+    layer->getMemoryShapes(inputShapes, 0, outputShapes, internalShapes);
+
+    CV_Assert(outputShapes.size() == 1);
+    std::vector<Mat> outputs{Mat(outputShapes[0], data.type())};
+    std::vector<Mat> internals;
+    for (size_t i = 0; i < internalShapes.size(); ++i)
+        internals.push_back(Mat(internalShapes[i], data.type()));
+
+    layer->finalize(inputs, outputs);
+    layer->forward(inputs, outputs, internals);
+    return outputs[0];
+}
+
+TEST(Layer_Test_GatherElements, SmallerNonAxisDimensionsNonInnermostAxis)
+{
+    Mat data({2, 4, 3}, CV_32S);
+    int32_t* dataPtr = data.ptr<int32_t>();
+    for (size_t i = 0; i < data.total(); ++i)
+        dataPtr[i] = static_cast<int32_t>(i);
+
+    Mat indices({1, 3, 2}, CV_32S);
+    int32_t* indicesPtr = indices.ptr<int32_t>();
+    indicesPtr[0] = 3;
+    indicesPtr[1] = 0;
+    indicesPtr[2] = 1;
+    indicesPtr[3] = 2;
+    indicesPtr[4] = 0;
+    indicesPtr[5] = 3;
+
+    Mat output = runGatherElementsLayer(data, indices, 1);
+    EXPECT_EQ(shape(1, 3, 2), shape(output));
+
+    const int32_t expected[] = {9, 1, 3, 7, 0, 10};
+    const int32_t* outputPtr = output.ptr<int32_t>();
+    ASSERT_EQ(sizeof(expected) / sizeof(expected[0]), output.total());
+    for (size_t i = 0; i < output.total(); ++i)
+        EXPECT_EQ(expected[i], outputPtr[i]);
+}
+
+TEST(Layer_Test_GatherElements, SmallerNonAxisDimensionsInnermostAxis)
+{
+    Mat data({2, 3, 4}, CV_32S);
+    int32_t* dataPtr = data.ptr<int32_t>();
+    for (size_t i = 0; i < data.total(); ++i)
+        dataPtr[i] = static_cast<int32_t>(i);
+
+    Mat indices({1, 2, 3}, CV_32S);
+    int32_t* indicesPtr = indices.ptr<int32_t>();
+    indicesPtr[0] = 3;
+    indicesPtr[1] = 0;
+    indicesPtr[2] = 1;
+    indicesPtr[3] = 2;
+    indicesPtr[4] = 3;
+    indicesPtr[5] = 0;
+
+    Mat output = runGatherElementsLayer(data, indices, 2);
+    EXPECT_EQ(shape(1, 2, 3), shape(output));
+
+    const int32_t expected[] = {3, 0, 1, 6, 7, 4};
+    const int32_t* outputPtr = output.ptr<int32_t>();
+    ASSERT_EQ(sizeof(expected) / sizeof(expected[0]), output.total());
+    for (size_t i = 0; i < output.total(); ++i)
+        EXPECT_EQ(expected[i], outputPtr[i]);
+}
+
+TEST(Layer_Test_GatherElements, RejectsOversizedNonAxisDimension)
+{
+    Mat data({1, 2, 3}, CV_32S);
+    Mat indices({1, 3, 3}, CV_32S);
+
+    EXPECT_THROW(runGatherElementsLayer(data, indices, 2), cv::Exception);
+}
+
 TEST_P(Test_Caffe_layers, BatchNorm)
 {
     testLayerUsingCaffeModels("layer_batch_norm", true);
@@ -2787,5 +2869,48 @@ INSTANTIATE_TEST_CASE_P(TestLayerFusion, ConvolutionActivationEltwiseFusion, Com
 /* eltwise weighted */  testing::Bool(),
                         TestLayerFusion::dnnBackendsAndTargetsForFusionTests()
 ));
+
+TEST(ConvolutionWinograd, Accuracy)
+{
+    Mat weights({2, 1, 3, 3}, CV_32F);
+    randn(weights, 0, 1);
+
+    // Check convolution can switch between implementations on changed shape.
+    auto getNet = [&]() {
+        Net net;
+        LayerParams lp;
+        lp.name = "conv";
+        lp.type = "Convolution";
+        lp.set("kernel_size", 3);
+        lp.set("num_output", 2);
+        lp.set("pad", 0);
+        lp.set("stride", 1);
+        lp.set("bias_term", false);
+
+        lp.blobs.push_back(weights);
+        net.addLayerToPrev(lp.name, lp.type, lp);
+        return net;
+    };
+
+    Mat inpSmall({1, 1, 5, 5}, CV_32F);
+    Mat inpLarge({1, 1, 64, 64}, CV_32F);
+    randn(inpSmall, 0, 1);
+    randn(inpLarge, 0, 1);
+
+    Net net1 = getNet();
+    Net net2 = getNet();
+    net1.setInput(inpSmall);
+    net2.setInput(inpLarge);
+    Mat refSmall = net1.forward();
+    Mat refLarge = net2.forward();
+
+    net1.setInput(inpLarge);
+    net2.setInput(inpSmall);
+    Mat outLarge = net1.forward();
+    Mat outSmall = net2.forward();
+
+    normAssert(outSmall, refSmall, "Small input after large", 0.0, 0.0);
+    normAssert(outLarge, refLarge, "Large input after small", 0.0, 0.0);
+}
 
 }} // namespace

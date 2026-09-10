@@ -95,30 +95,32 @@ enum ImwriteFlags {
        IMWRITE_JPEG_SAMPLING_FACTOR = 7, //!< For JPEG, set sampling factor. See cv::ImwriteJPEGSamplingFactorParams.
        IMWRITE_PNG_COMPRESSION     = 16, //!< For PNG, it can be the compression level from 0 to 9. A higher value means a smaller size and longer compression time. If specified, strategy is changed to IMWRITE_PNG_STRATEGY_DEFAULT (Z_DEFAULT_STRATEGY). Default value is 1 (best speed setting).
        IMWRITE_PNG_STRATEGY        = 17, //!< For PNG, One of cv::ImwritePNGFlags, default is IMWRITE_PNG_STRATEGY_RLE.
-       IMWRITE_PNG_BILEVEL         = 18, //!< For PNG, Binary level PNG, 0 or 1, default is 0.
-       IMWRITE_PNG_FILTER          = 19, //!< For PNG, One of cv::ImwritePNGFilterFlags, default is IMWRITE_PNG_FILTER_SUB.
-       IMWRITE_PNG_ZLIBBUFFER_SIZE = 20, //!< For PNG with libpng, sets the size of the internal zlib compression buffer in bytes, from 6 to 1048576(1024 KiB). Default is 8192(8 KiB). For normal use, 131072(128 KiB) or 262144(256 KiB) may be sufficient. If WITH_SPNG=ON, it is not supported.
+       IMWRITE_PNG_BILEVEL         = 18, //!< For PNG, Binary level PNG, 0 or 1, default is 0. For APNG, it is not supported.
+       IMWRITE_PNG_FILTER          = 19, //!< For PNG, One of cv::ImwritePNGFilterFlags, default is IMWRITE_PNG_FILTER_SUB. For APNG, it is not supported.
+       IMWRITE_PNG_ZLIBBUFFER_SIZE = 20, //!< For PNG with libpng, sets the size of the internal zlib compression buffer in bytes, from 6 to 1048576(1024 KiB). Default is 8192(8 KiB). For normal use, 131072(128 KiB) or 262144(256 KiB) may be sufficient. If WITH_SPNG=ON, it is not supported. For APNG, it is not supported.
        IMWRITE_PXM_BINARY          = 32, //!< For PPM, PGM, or PBM, it can be a binary format flag, 0 or 1. Default value is 1.
        IMWRITE_EXR_TYPE            = (3 << 4) + 0 /* 48 */, //!< override EXR storage type (FLOAT (FP32) is default)
        IMWRITE_EXR_COMPRESSION     = (3 << 4) + 1 /* 49 */, //!< override EXR compression type (ZIP_COMPRESSION = 3 is default)
        IMWRITE_EXR_DWA_COMPRESSION_LEVEL = (3 << 4) + 2 /* 50 */, //!< override EXR DWA compression level (45 is default)
-       IMWRITE_WEBP_QUALITY        = 64, //!< For WEBP, it can be a quality from 1 to 100 (the higher is the better). By default (without any parameter) and for quality above 100 the lossless compression is used.
+       IMWRITE_WEBP_QUALITY        = 64, //!< For WEBP, it can be a lossy quality from 1 to 100 (the higher is the better) for IMWRITE_WEBP_LOSSLESS_OFF. By default (without this parameter) or if quality > 100, IMWRITE_WEBP_LOSSLESS_ON is used instead.
+       IMWRITE_WEBP_LOSSLESS_MODE  = 65, //!< For WEBP, it can be a lossless compression strategy. See cv::ImwriteWEBPLosslessMode. Default is IMWRITE_WEBP_LOSSLESS_OFF. For Animated WEBP, it is not supported.
        IMWRITE_HDR_COMPRESSION     = (5 << 4) + 0 /* 80 */, //!< specify HDR compression
        IMWRITE_PAM_TUPLETYPE       = 128,//!< For PAM, sets the TUPLETYPE field to the corresponding string value that is defined for the format
        IMWRITE_TIFF_RESUNIT        = 256,//!< For TIFF, use to specify which DPI resolution unit to set. See ImwriteTiffResolutionUnitFlags. Default is IMWRITE_TIFF_RESOLUTION_UNIT_INCH.
        IMWRITE_TIFF_XDPI           = 257,//!< For TIFF, use to specify the X direction DPI
        IMWRITE_TIFF_YDPI           = 258,//!< For TIFF, use to specify the Y direction DPI
-       IMWRITE_TIFF_COMPRESSION    = 259,//!< For TIFF, use to specify the image compression scheme. See cv::ImwriteTiffCompressionFlags. Note, for images whose depth is CV_32F, only libtiff's SGILOG compression scheme is used. For other supported depths, the compression scheme can be specified by this flag; LZW compression is the default.
+       IMWRITE_TIFF_COMPRESSION    = 259,//!< For TIFF, use to specify the image compression scheme. See cv::ImwriteTiffCompressionFlags. The compression scheme can be specified by this flag; the default is LZW compression, except for 32F depth where it is NONE
        IMWRITE_TIFF_ROWSPERSTRIP   = 278,//!< For TIFF, use to specify the number of rows per strip.
        IMWRITE_TIFF_PREDICTOR      = 317,//!< For TIFF, use to specify predictor. See cv::ImwriteTiffPredictorFlags. Default is IMWRITE_TIFF_PREDICTOR_HORIZONTAL .
        IMWRITE_JPEG2000_COMPRESSION_X1000 = 272,//!< For JPEG2000, use to specify the target compression rate (multiplied by 1000). The value can be from 0 to 1000. Default is 1000.
        IMWRITE_AVIF_QUALITY        = 512,//!< For AVIF, it can be a quality between 0 and 100 (the higher the better). Default is 95.
-       IMWRITE_AVIF_DEPTH          = 513,//!< For AVIF, it can be 8, 10 or 12. If >8, it is stored/read as CV_32F. Default is 8.
+       IMWRITE_AVIF_DEPTH          = 513,//!< For AVIF, it can be 8, 10 or 12. If >8, it is stored/read as CV_16U. Default is 8.
        IMWRITE_AVIF_SPEED          = 514,//!< For AVIF, it is between 0 (slowest) and 10(fastest). Default is 9.
        IMWRITE_JPEGXL_QUALITY      = 640,//!< For JPEG XL, it can be a quality from 0 to 100 (the higher is the better). Default value is 95. If set, distance parameter is re-calicurated from quality level automatically. This parameter request libjxl v0.10 or later.
        IMWRITE_JPEGXL_EFFORT       = 641,//!< For JPEG XL, encoder effort/speed level without affecting decoding speed; it is between 1 (fastest) and 10 (slowest). Default is 7.
        IMWRITE_JPEGXL_DISTANCE     = 642,//!< For JPEG XL, distance level for lossy compression: target max butteraugli distance, lower = higher quality, 0 = lossless; range: 0 .. 25. Default is 1.
        IMWRITE_JPEGXL_DECODING_SPEED = 643,//!< For JPEG XL, decoding speed tier for the provided options; minimum is 0 (slowest to decode, best quality/density), and maximum is 4 (fastest to decode, at the cost of some quality/density). Default is 0.
+       IMWRITE_BMP_COMPRESSION     = 768,  //!< For BMP, use to specify compress parameter for 32bpp image. Default is IMWRITE_BMP_COMPRESSION_BITFIELDS. See cv::ImwriteBMPCompressionFlags.
        IMWRITE_GIF_LOOP            = 1024, //!< Not functional since 4.12.0. Replaced by cv::Animation::loop_count.
        IMWRITE_GIF_SPEED           = 1025, //!< Not functional since 4.12.0. Replaced by cv::Animation::durations.
        IMWRITE_GIF_QUALITY         = 1026, //!< For GIF, it can be a quality from 1 to 8. Default is 2. See cv::ImwriteGifCompressionFlags.
@@ -184,7 +186,7 @@ enum ImwriteTiffResolutionUnitFlags {
 };
 
 enum ImwriteEXRTypeFlags {
-       /*IMWRITE_EXR_TYPE_UNIT = 0, //!< not supported */
+       // IMWRITE_EXR_TYPE_UNIT = 0, // not supported
        IMWRITE_EXR_TYPE_HALF   = 1, //!< store as HALF (FP16)
        IMWRITE_EXR_TYPE_FLOAT  = 2  //!< store as FP32 (default)
      };
@@ -239,10 +241,24 @@ enum ImwritePAMFlags {
        IMWRITE_PAM_FORMAT_RGB_ALPHA       = 5
      };
 
+//! Imwrite WEBP specific values for IMWRITE_WEBP_LOSSLESS_MODE parameter key.
+enum ImwriteWEBPLosslessMode {
+    IMWRITE_WEBP_LOSSLESS_OFF            = 0, //!< Lossy compression mode. Uses IMWRITE_WEBP_QUALITY to control compression. (Default)
+                                              //!< @note If IMWRITE_WEBP_QUALITY is not specified, it falls back to IMWRITE_WEBP_LOSSLESS_ON to maintain backward compatibility.
+    IMWRITE_WEBP_LOSSLESS_ON             = 1, //!< Standard lossless compression. May modify or discard RGB values of fully transparent pixels to improve compression ratio.
+    IMWRITE_WEBP_LOSSLESS_PRESERVE_COLOR = 2, //!< Exact lossless compression. Preserves all RGB data even for pixels with 0 alpha (equivalent to WebP's exact flag).
+};
+
 //! Imwrite HDR specific values for IMWRITE_HDR_COMPRESSION parameter key
 enum ImwriteHDRCompressionFlags {
     IMWRITE_HDR_COMPRESSION_NONE = 0,
     IMWRITE_HDR_COMPRESSION_RLE = 1
+};
+
+//! Imwrite BMP specific values for IMWRITE_BMP_COMPRESSION parameter key.
+enum ImwriteBMPCompressionFlags {
+    IMWRITE_BMP_COMPRESSION_RGB = 0,       //!< Use BI_RGB. OpenCV v4.12.0 or before supports to encode with this compression only.
+    IMWRITE_BMP_COMPRESSION_BITFIELDS = 3, //!< Use BI_BITFIELDS. OpenCV v4.13.0 or later can support to encode with this compression. (only for 32 BPP images)
 };
 
 //! Imwrite GIF specific values for IMWRITE_GIF_QUALITY parameter key, if larger than 3, then its related to the size of the color table.
@@ -264,8 +280,9 @@ enum ImageMetadataType
     IMAGE_METADATA_EXIF = 0,     // EXIF metadata (e.g., camera info, GPS, orientation)
     IMAGE_METADATA_XMP = 1,      // XMP metadata (eXtensible Metadata Platform - Adobe format)
     IMAGE_METADATA_ICCP = 2,     // ICC Profile (color profile for color management)
+    IMAGE_METADATA_CICP = 3,     // cICP Profile (video signal type)
 
-    IMAGE_METADATA_MAX = 2       // Highest valid index (usually used for bounds checking)
+    IMAGE_METADATA_MAX = 3       // Highest valid index (usually used for bounds checking)
 };
 
 //! @} imgcodecs_flags
@@ -498,6 +515,11 @@ filename extension (see cv::imread for the list of extensions). In general, only
 single-channel or 3-channel (with 'BGR' channel order) images
 can be saved using this function, with these exceptions:
 
+- With BMP encoder, 8-bit unsigned (CV_8U) images can be saved.
+  - BMP images with an alpha channel can be saved using this function.
+    To achieve this, create an 8-bit 4-channel (CV_8UC4) BGRA image, ensuring the alpha channel is the last component.
+    Fully transparent pixels should have an alpha value of 0, while fully opaque pixels should have an alpha value of 255.
+    OpenCV v4.13.0 or later use BI_BITFIELDS compression as default. See IMWRITE_BMP_COMPRESSION.
 - With OpenEXR encoder, only 32-bit float (CV_32F) images can be saved. More than 4 channels can be saved. (imread can load it then.)
   - 8-bit unsigned (CV_8U) images are not supported.
 - With Radiance HDR encoder, non 64-bit float (CV_64F) images can be saved.
@@ -518,13 +540,21 @@ can be saved using this function, with these exceptions:
                      32-bit signed (CV_32S),
                      32-bit float (CV_32F) and 64-bit float (CV_64F) images can be saved.
   - Multiple images (vector of Mat) can be saved in TIFF format (see the code sample below).
-  - 32-bit float 3-channel (CV_32FC3) TIFF images will be saved
-    using the LogLuv high dynamic range encoding (4 bytes per pixel)
+  - 32-bit float 3-channel (CV_32FC3) TIFF images can be saved
+    using the LogLuv high dynamic range encoding (4 bytes per pixel) through TIFF_COMPRESSION_SGILOG or
+    (3 bytes per pixel) through TIFF_COMPRESSION_SGILOG24.
+  - Other compression schemes (LZW...) are supported as well for 32F depth, but the efficiency might not
+    be very good for the floating-point representation bit patterns.
 - With GIF encoder, 8-bit unsigned (CV_8U) images can be saved.
   - GIF images with an alpha channel can be saved using this function.
     To achieve this, create an 8-bit 4-channel (CV_8UC4) BGRA image, ensuring the alpha channel is the last component.
     Fully transparent pixels should have an alpha value of 0, while fully opaque pixels should have an alpha value of 255.
   - 8-bit single-channel images (CV_8UC1) are not supported due to GIF's limitation to indexed color formats.
+- With AVIF encoder, 8-bit unsigned (CV_8U) and 16-bit unsigned (CV_16U) images can be saved.
+  - CV_16U images can be saved as only 10-bit or 12-bit (not 16-bit). See IMWRITE_AVIF_DEPTH.
+  - AVIF images with an alpha channel can be saved using this function.
+    To achieve this, create an 8-bit 4-channel (CV_8UC4) / 16-bit 4-channel (CV_16UC4) BGRA image, ensuring the alpha channel is the last component.
+    Fully transparent pixels should have an alpha value of 0, while fully opaque pixels should have an alpha value of 255 (8-bit) / 1023 (10-bit) / 4095 (12-bit) (see the code sample below).
 
 If the image format is not supported, the image will be converted to 8-bit unsigned (CV_8U) and saved that way.
 
@@ -538,6 +568,7 @@ It also demonstrates how to save multiple images in a TIFF file:
 @param filename Name of the file.
 @param img (Mat or vector of Mat) Image or Images to be saved.
 @param params Format-specific parameters encoded as pairs (paramId_1, paramValue_1, paramId_2, paramValue_2, ... .) see cv::ImwriteFlags
+@return true if the image is successfully written to the specified file; false otherwise.
 */
 CV_EXPORTS_W bool imwrite( const String& filename, InputArray img,
               const std::vector<int>& params = std::vector<int>());

@@ -8,6 +8,13 @@ namespace opencv_test { namespace {
 
 #if defined(HAVE_PNG) || defined(HAVE_SPNG)
 
+// See https://github.com/opencv/opencv/pull/28615
+// Precision differences in 16-bit grayscale conversion between old and modern libpng versions
+#define OPENCV_IMGCODECS_PNG_EPS_DEFAULT (4)
+#ifndef OPENCV_IMGCODECS_PNG_EPS_16BIT_GRAY
+#define  OPENCV_IMGCODECS_PNG_EPS_16BIT_GRAY (OPENCV_IMGCODECS_PNG_EPS_DEFAULT)
+#endif
+
 TEST(Imgcodecs_Png, write_big)
 {
     const string root = cvtest::TS::ptr()->get_data_path();
@@ -157,6 +164,51 @@ TEST(Imgcodecs_Png, decode_regression27295)
     EXPECT_TRUE(img.empty());
 }
 
+// The program must not crash even when decoding a corrupted APNG image.
+// See https://github.com/opencv/opencv/issues/27744
+#if defined(HAVE_PNG) // APNG is supported only with using libpng
+TEST(Imgcodecs_Png, decode_regression27744)
+{
+    // Create APNG stream
+    Animation anim;
+    for(size_t i = 0 ; i < 3 ; i++) {
+        Mat frame(120, 120, CV_8UC3, Scalar(0,0,0));
+        putText(frame, cv::format("%d", static_cast<int>(i)), Point(5, 28), FONT_HERSHEY_SIMPLEX, .5, Scalar(100, 255, 0, 255), 2);
+        anim.frames.push_back(frame);
+        anim.durations.push_back(30);
+    }
+    bool ret = false;
+    vector<uchar> buff;
+    EXPECT_NO_THROW(ret = imencodeanimation(".png", anim,  buff));
+    ASSERT_TRUE(ret) << "imencodeanimation() returns false";
+
+    // Find IDAT chunk
+    const vector<uchar> IDAT = {'I', 'D', 'A', 'T' };
+    std::vector<uchar>::iterator it = std::search(buff.begin(), buff.end(), IDAT.begin(), IDAT.end());
+    ASSERT_FALSE(it == buff.end()) << "IDAT chunk not found";
+
+    // Determine the range to test
+    // APNG stream contains as { len0, len1, len2, len3, 'I', 'D', 'A' 'T', ... }
+    size_t idx = std::distance(buff.begin(), it); // 'I' position
+    size_t len = (buff[idx-4] << 24) + (buff[idx-3] << 16) +
+                 (buff[idx-2] <<  8) + (buff[idx-1]); // IDAT chunk length
+    idx = idx + 4; // Move to IDAT body
+
+    // Test
+    for(size_t i = 0; i < len; i++, idx++) {
+        vector<uint8_t> work = buff;
+        work[idx] = static_cast<uint8_t>((static_cast<uint32_t>(work[idx]) + 1) & 0xff);
+
+        Mat dst;
+        EXPECT_NO_THROW(dst = imdecode(work, cv::IMREAD_COLOR));
+        if(dst.empty()) {
+            // libpng detects some error, but the program is not crashed. Test is passed.
+            break;
+        }
+    }
+}
+#endif
+
 typedef testing::TestWithParam<string> Imgcodecs_Png_PngSuite;
 
 // Parameterized test for decoding PNG files from the PNGSuite test set
@@ -231,10 +283,12 @@ TEST_P(Imgcodecs_Png_PngSuite, decode)
         cvtColor(gt_3, gt_258, COLOR_BGR2RGB);
     }
 
+    const double epsGrayAnydepth = ((gt.depth() == CV_16U) && (gt.channels() > 1)) ? OPENCV_IMGCODECS_PNG_EPS_16BIT_GRAY: OPENCV_IMGCODECS_PNG_EPS_DEFAULT;
+
     // Perform comparisons with different imread flags
     EXPECT_PRED_FORMAT2(cvtest::MatComparator(1, 0), imread(filename, IMREAD_GRAYSCALE), gt_0);
     EXPECT_PRED_FORMAT2(cvtest::MatComparator(1, 0), imread(filename, IMREAD_COLOR), gt_1);
-    EXPECT_PRED_FORMAT2(cvtest::MatComparator(4, 0), imread(filename, IMREAD_ANYDEPTH), gt_2);
+    EXPECT_PRED_FORMAT2(cvtest::MatComparator(epsGrayAnydepth, 0), imread(filename, IMREAD_ANYDEPTH), gt_2); // IMREAD_GRAYSCALE is used.
     EXPECT_PRED_FORMAT2(cvtest::MatComparator(0, 0), imread(filename, IMREAD_COLOR | IMREAD_ANYDEPTH), gt_3);
     EXPECT_PRED_FORMAT2(cvtest::MatComparator(1, 0), imread(filename, IMREAD_COLOR_RGB), gt_256);
     EXPECT_PRED_FORMAT2(cvtest::MatComparator(0, 0), imread(filename, IMREAD_COLOR_RGB | IMREAD_ANYDEPTH), gt_258);

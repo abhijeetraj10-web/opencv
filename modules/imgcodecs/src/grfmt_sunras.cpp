@@ -61,9 +61,21 @@ bool  SunRasterDecoder::readHeader()
         int palSize = (m_bpp > 0 && m_bpp <= 8) ? (3*(1 << m_bpp)) : 0;
 
         m_strm.skip( 4 );
-        m_encoding = (SunRasType)m_strm.getDWord();
-        m_maptype = (SunRasMapType)m_strm.getDWord();
+        // Read as plain integers first; validate before casting to enum types.
+        // Casting an out-of-range integer directly to an enum with no fixed
+        // underlying type is undefined behavior (C++11 §7.2/8). Reject invalid
+        // values early so no downstream code ever touches an ill-formed enum.
+        const int raw_encoding = (int)m_strm.getDWord();
+        const int raw_maptype  = (int)m_strm.getDWord();
         m_maplength = m_strm.getDWord();
+
+        if (raw_encoding < RAS_OLD || raw_encoding > RAS_FORMAT_RGB)
+            return false;
+        if (raw_maptype < RMT_NONE || raw_maptype > RMT_EQUAL_RGB)
+            return false;
+
+        m_encoding = (SunRasType)raw_encoding;
+        m_maptype  = (SunRasMapType)raw_maptype;
 
         if( m_width > 0 && m_height > 0 &&
             (m_bpp == 1 || m_bpp == 8 || m_bpp == 24 || m_bpp == 32) &&
@@ -94,7 +106,7 @@ bool  SunRasterDecoder::readHeader()
                     m_type = IsColorPalette( m_palette, m_bpp ) ? CV_8UC3 : CV_8UC1;
                     m_offset = m_strm.getPos();
 
-                    CV_Assert(m_offset == 32 + m_maplength);
+                    CV_Assert(m_offset == static_cast<int64_t>(32 + m_maplength));
                     result = true;
                 }
             }
@@ -107,7 +119,7 @@ bool  SunRasterDecoder::readHeader()
 
                 m_offset = m_strm.getPos();
 
-                CV_Assert(m_offset == 32 + m_maplength);
+                CV_Assert(m_offset == static_cast<int64_t>(32 + m_maplength));
                 result = true;
             }
         }
@@ -133,10 +145,13 @@ bool  SunRasterDecoder::readData( Mat& img )
     size_t step = img.step;
     uchar  gray_palette[256] = {0};
     bool   result = false;
-    int  src_pitch = ((m_width*m_bpp + 7)/8 + 1) & -2;
     int  nch = color ? 3 : 1;
-    int  width3 = m_width*nch;
-    int  y;
+
+    const RowPitchParams pitch_params = calculateRowPitch(m_width, m_bpp, 2, "SunRaster");
+    const int src_pitch = pitch_params.src_pitch;
+    const size_t bytes_per_row = pitch_params.bytes_per_row;
+    const int width3 = calculateRowSize(m_width, nch, "SunRaster");
+    int y;
 
     if( m_offset < 0 || !m_strm.isOpened())
         return false;
@@ -144,7 +159,7 @@ bool  SunRasterDecoder::readData( Mat& img )
     AutoBuffer<uchar> _src(src_pitch + 32);
     uchar* src = _src.data();
 
-    if( !color && m_maptype == RMT_EQUAL_RGB )
+    if( !color )
         CvtPaletteToGray( m_palette, gray_palette, 1 << m_bpp );
 
     try
@@ -169,7 +184,7 @@ bool  SunRasterDecoder::readData( Mat& img )
             }
             else
             {
-                uchar* line_end = src + (m_width*m_bpp + 7)/8;
+                uchar* line_end = src + bytes_per_row;
                 uchar* tsrc = src;
                 y = 0;
 

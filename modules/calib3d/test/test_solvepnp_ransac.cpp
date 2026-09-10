@@ -470,7 +470,7 @@ public:
     {
         eps[SOLVEPNP_ITERATIVE] = 1.0e-6;
         eps[SOLVEPNP_EPNP] = 1.0e-6;
-        eps[SOLVEPNP_P3P] = 2.0e-4;
+        eps[SOLVEPNP_P3P] = 1.0e-4;
         eps[SOLVEPNP_AP3P] = 1.0e-4;
         eps[SOLVEPNP_DLS] = 1.0e-6; // DLS is remapped to EPnP, so we use the same threshold
         eps[SOLVEPNP_UPNP] = 1.0e-6; // UPnP is remapped to EPnP, so we use the same threshold
@@ -613,7 +613,7 @@ class CV_solveP3P_Test : public CV_solvePnPRansac_Test
 public:
     CV_solveP3P_Test()
     {
-        eps[SOLVEPNP_P3P] = 2.0e-4;
+        eps[SOLVEPNP_P3P] = 1.0e-4;
         eps[SOLVEPNP_AP3P] = 1.0e-4;
         totalTestsCount = 1000;
     }
@@ -1513,7 +1513,7 @@ TEST(Calib3d_SolvePnP, generic)
                 for (size_t i = 0; i < rvecs_est.size() && !isTestSuccess; i++) {
                     double rvecDiff = cvtest::norm(rvecs_est[i], rvec_ground_truth, NORM_L2);
                     double tvecDiff = cvtest::norm(tvecs_est[i], tvec_ground_truth, NORM_L2);
-                    const double threshold = method == SOLVEPNP_P3P ? 1e-2 : 1e-4;
+                    const double threshold = 1e-4;
                     isTestSuccess = rvecDiff < threshold && tvecDiff < threshold;
                 }
 
@@ -1581,7 +1581,7 @@ TEST(Calib3d_SolvePnP, generic)
                 for (size_t i = 0; i < rvecs_est.size() && !isTestSuccess; i++) {
                     double rvecDiff = cvtest::norm(rvecs_est[i], rvec_ground_truth, NORM_L2);
                     double tvecDiff = cvtest::norm(tvecs_est[i], tvec_ground_truth, NORM_L2);
-                    const double threshold = method == SOLVEPNP_P3P ? 1e-2 : 1e-4;
+                    const double threshold = 1e-4;
                     isTestSuccess = rvecDiff < threshold && tvecDiff < threshold;
                 }
 
@@ -2107,6 +2107,61 @@ TEST(Calib3d_SolvePnPRansac, inputShape)
 
         EXPECT_LE(cvtest::norm(true_rvec, rvec, NORM_INF), 1e-6);
         EXPECT_LE(cvtest::norm(true_tvec, Tvec, NORM_INF), 1e-6);
+    }
+}
+
+TEST(Calib3d_SolvePnP, refine_row_vector)
+{
+    // solvePnPRefineLM()/VVS() explicitly accept rvec/tvec as either
+    // Size(1,3) (row vector) or Size(3,1) (column vector) per their
+    // own precondition check, but historically only the column-vector
+    // shape was exercised. Verify both orientations converge to the
+    // same, correct result.
+    Matx33d intrinsics(605.4, 0.0, 317.35,
+                       0.0, 601.2, 242.63,
+                       0.0, 0.0, 1.0);
+
+    double L = 0.1;
+    vector<Point3d> p3d;
+    p3d.push_back(Point3d(-L, -L, 0.0));
+    p3d.push_back(Point3d(L, -L, 0.0));
+    p3d.push_back(Point3d(L, L, 0.0));
+    p3d.push_back(Point3d(-L, L, L/2));
+    p3d.push_back(Point3d(0, 0, -L/2));
+
+    Mat rvec_ground_truth = (Mat_<double>(3,1) << 0.3, -0.2, 0.75);
+    Mat tvec_ground_truth = (Mat_<double>(3,1) << 0.15, -0.2, 1.5);
+
+    vector<Point2d> p2d;
+    projectPoints(p3d, rvec_ground_truth, tvec_ground_truth, intrinsics, noArray(), p2d);
+
+    for (int method = 0; method < 2; method++)
+    {
+        Mat rvec_col = (Mat_<double>(3,1) << 0.1, -0.1, 0.1);
+        Mat tvec_col = (Mat_<double>(3,1) << 0.0, -0.5, 1.0);
+        Mat rvec_row = rvec_col.reshape(1, 1).clone();
+        Mat tvec_row = tvec_col.reshape(1, 1).clone();
+
+        if (method == 0)
+        {
+            solvePnPRefineLM(p3d, p2d, intrinsics, noArray(), rvec_col, tvec_col);
+            solvePnPRefineLM(p3d, p2d, intrinsics, noArray(), rvec_row, tvec_row);
+        }
+        else
+        {
+            solvePnPRefineVVS(p3d, p2d, intrinsics, noArray(), rvec_col, tvec_col);
+            solvePnPRefineVVS(p3d, p2d, intrinsics, noArray(), rvec_row, tvec_row);
+        }
+
+        EXPECT_LE(cvtest::norm(rvec_ground_truth, rvec_col, NORM_INF), 1e-6);
+        EXPECT_LE(cvtest::norm(tvec_ground_truth, tvec_col, NORM_INF), 1e-6);
+
+        // the row-vector call must converge to the same result as the
+        // column-vector call, and must actually write back into rvec_row/
+        // tvec_row (a shape mismatch during write-back previously left
+        // these unmodified even after fixing the read-side OOB)
+        EXPECT_LE(cvtest::norm(rvec_col, rvec_row.reshape(1, 3), NORM_INF), 1e-9);
+        EXPECT_LE(cvtest::norm(tvec_col, tvec_row.reshape(1, 3), NORM_INF), 1e-9);
     }
 }
 

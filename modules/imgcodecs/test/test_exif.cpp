@@ -144,6 +144,17 @@ namespace opencv_test { namespace {
         return iccp_data;
     }
 
+#ifdef OPENCV_IMGCODECS_PNG_WITH_cICP
+    static std::vector<uchar> getSampleCicpData() {
+        return {
+            9,  // BT.2020 / BT.2100
+            16, // SMPTE ST 2084 (PQ)
+            0,  // Identity (RGB)
+            1,  // Full Range
+        };
+    }
+#endif
+
  /**
  * Test to check whether the EXIF orientation tag was processed successfully or not.
  * The test uses a set of 8 images named testExifOrientation_{1 to 8}.(extension).
@@ -296,13 +307,15 @@ INSTANTIATE_TEST_CASE_P(Imgcodecs, Exif,
                         testing::ValuesIn(exif_files));
 
 #ifdef HAVE_AVIF
-TEST(Imgcodecs_Avif, ReadWriteWithExif)
+typedef testing::TestWithParam<int> MatChannels;
+
+TEST_P(MatChannels, Imgcodecs_Avif_ReadWriteWithExif)
 {
     int avif_nbits = 10;
     int avif_speed = 10;
     int avif_quality = 85;
     int imgdepth = avif_nbits > 8 ? CV_16U : CV_8U;
-    int imgtype = CV_MAKETYPE(imgdepth, 3);
+    int imgtype = CV_MAKETYPE(imgdepth, GetParam());
     const string outputname = cv::tempfile(".avif");
     Mat img = makeCirclesImage(Size(1280, 720), imgtype, avif_nbits);
 
@@ -328,7 +341,7 @@ TEST(Imgcodecs_Avif, ReadWriteWithExif)
     EXPECT_EQ(img2.rows, img.rows);
     EXPECT_EQ(img2.type(), imgtype);
     EXPECT_EQ(read_metadata_types, read_metadata_types2);
-    EXPECT_GE(read_metadata_types.size(), 1u);
+    ASSERT_GE(read_metadata_types.size(), 1u);
     EXPECT_EQ(read_metadata, read_metadata2);
     EXPECT_EQ(read_metadata_types[0], IMAGE_METADATA_EXIF);
     EXPECT_EQ(read_metadata_types.size(), read_metadata.size());
@@ -338,6 +351,9 @@ TEST(Imgcodecs_Avif, ReadWriteWithExif)
     EXPECT_LT(mse, 1500);
     remove(outputname.c_str());
 }
+
+INSTANTIATE_TEST_CASE_P(Imgcodecs, MatChannels,
+                        testing::Values(1,3,4));
 #endif // HAVE_AVIF
 
 #ifdef HAVE_WEBP
@@ -452,18 +468,27 @@ TEST(Imgcodecs_Png, Read_Write_With_Exif)
     EXPECT_EQ(img2.rows, img.rows);
     EXPECT_EQ(img2.type(), imgtype);
     EXPECT_EQ(read_metadata_types, read_metadata_types2);
+
+#ifdef OPENCV_IMGCODECS_PNG_WITH_EXIF
     ASSERT_GE(read_metadata_types.size(), 1u);
     EXPECT_EQ(read_metadata, read_metadata2);
     EXPECT_EQ(read_metadata_types[0], IMAGE_METADATA_EXIF);
     EXPECT_EQ(read_metadata_types.size(), read_metadata.size());
     EXPECT_EQ(read_metadata[0], metadata[0]);
+#else
+    ASSERT_GE(read_metadata_types.size(), 0u);
+#endif
     EXPECT_EQ(cv::norm(img2, img3, NORM_INF), 0.);
     double mse = cv::norm(img, img2, NORM_L2SQR)/(img.rows*img.cols);
     EXPECT_EQ(mse, 0); // png is lossless
     remove(outputname.c_str());
 }
 
+#ifdef OPENCV_IMGCODECS_PNG_WITH_cICP
+TEST(Imgcodecs_Png, Read_Write_With_Exif_Xmp_Iccp_cICP)
+#else
 TEST(Imgcodecs_Png, Read_Write_With_Exif_Xmp_Iccp)
+#endif
 {
     int png_compression = 3;
     int imgtype = CV_MAKETYPE(CV_8U, 3);
@@ -476,6 +501,11 @@ TEST(Imgcodecs_Png, Read_Write_With_Exif_Xmp_Iccp)
         getSampleXmpData(),
         getSampleIccpData(),
     };
+
+#ifdef OPENCV_IMGCODECS_PNG_WITH_cICP
+    metadata_types.push_back(IMAGE_METADATA_CICP);
+    metadata.push_back(getSampleCicpData());
+#endif
 
     std::vector<int> write_params = {
         IMWRITE_PNG_COMPRESSION, png_compression
@@ -493,9 +523,23 @@ TEST(Imgcodecs_Png, Read_Write_With_Exif_Xmp_Iccp)
     EXPECT_EQ(img2.rows, img.rows);
     EXPECT_EQ(img2.type(), imgtype);
 
+#ifdef OPENCV_IMGCODECS_PNG_WITH_EXIF
     EXPECT_EQ(metadata_types, read_metadata_types);
     EXPECT_EQ(read_metadata_types, read_metadata_types2);
     EXPECT_EQ(metadata, read_metadata);
+#else
+    ASSERT_GE(read_metadata_types.size(),  2u);
+    EXPECT_EQ(read_metadata_types[0],  IMAGE_METADATA_XMP);
+    EXPECT_EQ(read_metadata_types[1],  IMAGE_METADATA_ICCP);
+
+    ASSERT_GE(read_metadata_types2.size(), 2u);
+    EXPECT_EQ(read_metadata_types2[0], IMAGE_METADATA_XMP);
+    EXPECT_EQ(read_metadata_types2[1], IMAGE_METADATA_ICCP);
+
+    ASSERT_GE(read_metadata.size(), 2u);
+    EXPECT_EQ(metadata[1], read_metadata[0]);
+    EXPECT_EQ(metadata[2], read_metadata[1]);
+#endif
     remove(outputname.c_str());
 }
 
@@ -520,6 +564,65 @@ TEST(Imgcodecs_Png, Read_Exif_From_Text)
     std::vector<int> metadata_types = { IMAGE_METADATA_EXIF };
     EXPECT_EQ(read_metadata_types, metadata_types);
     EXPECT_EQ(read_metadata[0], exif_data);
+}
+
+static uint32_t pngCrc32(const uchar* data, size_t len)
+{
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++)
+    {
+        crc ^= data[i];
+        for (int k = 0; k < 8; k++)
+            crc = (crc & 1u) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+    }
+    return crc ^ 0xFFFFFFFFu;
+}
+
+static void pngAppendBE32(std::vector<uchar>& v, uint32_t x)
+{
+    v.push_back((uchar)(x >> 24)); v.push_back((uchar)(x >> 16));
+    v.push_back((uchar)(x >> 8));  v.push_back((uchar)x);
+}
+
+// Regression: a PNG "Raw profile type exif" text chunk whose declared length is
+// far larger than the payload it carries must be rejected (no multi-GB
+// speculative allocation / no out-of-bounds read in ExifReader::processRawProfile)
+// while the image itself still decodes.
+TEST(Imgcodecs_Png, Read_Exif_From_Text_oversized_length_rejected)
+{
+    Mat img(8, 8, CV_8UC3, Scalar(10, 20, 30));
+    std::vector<uchar> png;
+    ASSERT_TRUE(imencode(".png", img, png));
+    ASSERT_GT(png.size(), 33u);  // 8-byte signature + 25-byte IHDR chunk
+
+    const std::string keyword = "Raw profile type exif";
+    const std::string profile = "\nexif\n999999999\n41414141\n";  // 9e8 declared, tiny payload
+    std::vector<uchar> data(keyword.begin(), keyword.end());
+    data.push_back(0);  // keyword / text separator
+    data.insert(data.end(), profile.begin(), profile.end());
+
+    std::vector<uchar> chunk;
+    pngAppendBE32(chunk, (uint32_t)data.size());
+    const char type[4] = { 't', 'E', 'X', 't' };
+    chunk.insert(chunk.end(), type, type + 4);
+    chunk.insert(chunk.end(), data.begin(), data.end());
+    std::vector<uchar> crc_input(type, type + 4);
+    crc_input.insert(crc_input.end(), data.begin(), data.end());
+    pngAppendBE32(chunk, pngCrc32(crc_input.data(), crc_input.size()));
+
+    // splice the tEXt chunk right after IHDR (valid placement for ancillary chunks)
+    png.insert(png.begin() + 33, chunk.begin(), chunk.end());
+
+    std::vector<int> metadata_types;
+    std::vector<std::vector<uchar> > metadata;
+    Mat decoded;
+    ASSERT_NO_THROW(decoded = imdecodeWithMetadata(png, metadata_types, metadata, IMREAD_COLOR));
+    ASSERT_FALSE(decoded.empty());
+    EXPECT_EQ(decoded.rows, 8);
+    EXPECT_EQ(decoded.cols, 8);
+    // the malformed profile must not produce EXIF metadata
+    for (size_t i = 0; i < metadata_types.size(); i++)
+        EXPECT_NE(metadata_types[i], IMAGE_METADATA_EXIF);
 }
 
 static size_t locateString(const uchar* exif, size_t exif_size, const std::string& pattern)

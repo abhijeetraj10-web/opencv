@@ -3,6 +3,7 @@
 // of this distribution and at http://opencv.org/license.html.
 
 #include "test_precomp.hpp"
+#include "opencv2/imgcodecs.hpp"
 
 using namespace std;
 
@@ -845,13 +846,29 @@ TEST(videoio_ffmpeg, create_with_property_badarg)
     EXPECT_FALSE(cap.isOpened());
 }
 
+TEST(videoio_ffmpeg, open_with_format_cv8uc3)
+{
+    if (!videoio_registry::hasBackend(CAP_FFMPEG))
+        throw SkipTestException("FFmpeg backend was not found");
+
+    string video_file = findDataFile("video/big_buck_bunny.mp4");
+    VideoCapture cap(video_file, CAP_FFMPEG, {
+        CAP_PROP_FORMAT, CV_8UC3
+    });
+    ASSERT_TRUE(cap.isOpened());
+    EXPECT_EQ(cap.get(CAP_PROP_FORMAT), CV_8UC3);
+    Mat frame;
+    ASSERT_TRUE(cap.read(frame));
+    EXPECT_EQ(frame.channels(), 3);
+}
+
 // related issue: https://github.com/opencv/opencv/issues/16821
 TEST(videoio_ffmpeg, DISABLED_open_from_web)
 {
     if (!videoio_registry::hasBackend(CAP_FFMPEG))
         throw SkipTestException("FFmpeg backend was not found");
 
-    string video_file = "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
+    string video_file = "https://dl.opencv.org/data/BigBuckBunny.mp4";
     VideoCapture cap(video_file, CAP_FFMPEG);
     int n_frames = -1;
     EXPECT_NO_THROW(n_frames = (int)cap.get(CAP_PROP_FRAME_COUNT));
@@ -1030,9 +1047,70 @@ inline static std::string videoio_ffmpeg_mismatch_name_printer(const testing::Te
 
 INSTANTIATE_TEST_CASE_P(/**/, videoio_ffmpeg_channel_mismatch, testing::ValuesIn(mismatch_cases), videoio_ffmpeg_mismatch_name_printer);
 
-// PR: https://github.com/opencv/opencv/pull/27523
-// TODO: Enable the tests back on Windows after FFmpeg plugin rebuild
-#ifndef _WIN32
+typedef tuple<string, string> AlphaChannelParams;
+typedef testing::TestWithParam< AlphaChannelParams > videoio_ffmpeg_alpha_channel;
+
+TEST_P(videoio_ffmpeg_alpha_channel, write_read)
+{
+    if (!videoio_registry::hasBackend(CAP_FFMPEG))
+        throw SkipTestException("FFmpeg backend was not found");
+
+    const int fourcc = fourccFromString(get<0>(GetParam()));
+    const string filename = "video_with_alpha_channel." + get<1>(GetParam());
+    cv::VideoWriter writer(filename, cv::CAP_FFMPEG, fourcc, 1, Size(320, 240),
+                           {VIDEOWRITER_PROP_IS_COLOR, 1,
+                            VIDEOWRITER_PROP_ENABLE_ALPHA, 1});
+
+    ASSERT_TRUE(writer.isOpened());
+
+    for (int i = 0; i < 10; i ++)
+    {
+        cv::Mat frame;
+        cv::Mat gray_frame(240, 320, CV_8UC1, cv::Scalar::all(0));
+        gray_frame(Rect(i*10, i*10, i*10, i*10)).setTo(255);
+        cv::Mat channels[4] = {gray_frame, gray_frame, gray_frame, gray_frame};
+        cv::merge(channels, 4, frame);
+        writer.write(frame);
+    }
+
+    writer.release();
+
+    cv::VideoCapture cap(filename, cv::CAP_FFMPEG, {cv::CAP_PROP_FORMAT, CV_8UC4});
+    ASSERT_TRUE(cap.isOpened());
+    ASSERT_EQ(10, cap.get(cv::CAP_PROP_FRAME_COUNT));
+
+    for (int i = 0; i < 10; i++)
+    {
+        cv::Mat frame;
+        cap >> frame;
+        EXPECT_EQ(4, frame.channels());
+        EXPECT_EQ(320, frame.cols);
+        EXPECT_EQ(240, frame.rows);
+        EXPECT_EQ(0, frame.data[0]);
+        EXPECT_EQ(0, frame.data[1]);
+        EXPECT_EQ(0, frame.data[2]);
+        EXPECT_EQ(0, frame.data[3]);
+
+        cv::Mat channels[4];
+        cv::split(frame, channels);
+        int g_non_zero = cv::countNonZero(channels[1]);
+        int alpha_non_zero = cv::countNonZero(channels[3]);
+
+        EXPECT_EQ(g_non_zero, alpha_non_zero);
+    }
+    remove(filename.c_str());
+}
+
+AlphaChannelParams alpha_params[] =
+{
+    make_tuple("FFV1", "mkv"),
+    make_tuple("FFV1", "avi")
+    // webm and hevc formats are disable as require fresh FFmpeg
+    //make_tuple("VP90", "webm")
+    //make_tuple("hevc", "mp4")
+};
+
+INSTANTIATE_TEST_CASE_P(/**/, videoio_ffmpeg_alpha_channel, testing::ValuesIn(alpha_params));
 
 // related issue: https://github.com/opencv/opencv/issues/23088
 TEST(ffmpeg_cap_properties, set_pos_get_msec)
@@ -1055,6 +1133,124 @@ TEST(ffmpeg_cap_properties, set_pos_get_msec)
     EXPECT_EQ(cap.get(CAP_PROP_POS_MSEC), 0.0);
 }
 
-#endif // WIN32
+// Test that seeking twice to the same frame in videos with negative DTS
+// does not result in negative position or timestamp values
+// related issue: https://github.com/opencv/opencv/issues/27819
+TEST(videoio_ffmpeg, seek_with_negative_dts)
+{
+    if (!videoio_registry::hasBackend(CAP_FFMPEG))
+        throw SkipTestException("FFmpeg backend was not found");
+
+    const std::string filename = findDataFile("video/negdts_h264.mp4");
+    VideoCapture cap(filename, CAP_FFMPEG);
+
+    if (!cap.isOpened())
+        throw SkipTestException("Video stream is not supported");
+
+    // after open, a single grab() should not yield negative POS_MSEC.
+    ASSERT_TRUE(cap.grab());
+    EXPECT_GE(cap.get(CAP_PROP_POS_MSEC), 0.0) << "Negative ts immediately after open+grab()";
+
+    ASSERT_TRUE(cap.set(CAP_PROP_POS_FRAMES, 0));
+    (void)cap.get(CAP_PROP_POS_FRAMES);
+
+    const int framesToProbe[] = {2, 3, 4, 5};
+
+    for (int f : framesToProbe)
+    {
+        // Reset to frame 0
+        ASSERT_TRUE(cap.set(CAP_PROP_POS_FRAMES, 0));
+        cap.get(CAP_PROP_POS_FRAMES);
+
+        // Seek to target frame
+        ASSERT_TRUE(cap.set(CAP_PROP_POS_FRAMES, f));
+        const double posAfterFirstSeek = cap.get(CAP_PROP_POS_FRAMES);
+
+        // Seek to the same frame again
+        ASSERT_TRUE(cap.set(CAP_PROP_POS_FRAMES, f));
+        const double posAfterSecondSeek = cap.get(CAP_PROP_POS_FRAMES);
+        const double tsAfterSecondSeek = cap.get(CAP_PROP_POS_MSEC);
+
+        EXPECT_GE(posAfterSecondSeek, 0)
+            << "Frame index became negative after second seek to frame " << f
+            << " (first seek gave " << posAfterFirstSeek << ")";
+        EXPECT_GE(tsAfterSecondSeek, 0.0)
+            << "Timestamp became negative after second seek to frame " << f;
+
+        // Per-iteration decode check: grab() + ts non-negative
+        ASSERT_TRUE(cap.grab());
+        EXPECT_GE(cap.get(CAP_PROP_POS_MSEC), 0.0) << "Negative timestamp after grab() at frame " << f;
+
+        // Verify that reading a frame works and position advances
+        Mat frame;
+        ASSERT_TRUE(cap.read(frame));
+        ASSERT_FALSE(frame.empty());
+        EXPECT_GE(cap.get(CAP_PROP_POS_FRAMES), f);
+    }
+}
+
+// The test requires FFmpeg wrapper rebuild on Windows
+#ifndef _WIN32
+// MJPEG stream whose chroma subsampling changes mid-stream at constant
+// frame size must not reuse a conversion context built for the previous frame.
+// related issue: https://github.com/opencv/opencv/issues/29699
+TEST(videoio_ffmpeg, mjpeg_pixel_format_change)
+{
+    if (!videoio_registry::hasBackend(CAP_FFMPEG))
+        throw SkipTestException("FFmpeg backend was not found");
+
+    Mat frame0(64, 64, CV_8UC3, Scalar(0, 0, 255));
+    Mat frame1(64, 64, CV_8UC3);
+    for (int y = 0; y < frame1.rows; y++)
+        for (int x = 0; x < frame1.cols; x++)
+            frame1.at<Vec3b>(y, x) = Vec3b((uchar)(x * 4), (uchar)(y * 4), (uchar)((x + y) * 2));
+
+    vector<uchar> buf0, buf1;
+    ASSERT_TRUE(imencode(".jpg", frame0, buf0,
+        {IMWRITE_JPEG_SAMPLING_FACTOR, IMWRITE_JPEG_SAMPLING_FACTOR_422, IMWRITE_JPEG_QUALITY, 100}));
+    ASSERT_TRUE(imencode(".jpg", frame1, buf1,
+        {IMWRITE_JPEG_SAMPLING_FACTOR, IMWRITE_JPEG_SAMPLING_FACTOR_420, IMWRITE_JPEG_QUALITY, 100}));
+
+    const string filename = tempfile("test_pixfmt_change.mjpeg");
+    std::ofstream file(filename.c_str(), ios::out | ios::trunc | std::ios::binary);
+    file.write(reinterpret_cast<char*>(buf0.data()), buf0.size());
+    file.write(reinterpret_cast<char*>(buf1.data()), buf1.size());
+    file.close();
+
+    VideoCapture cap(filename, CAP_FFMPEG);
+    ASSERT_TRUE(cap.isOpened());
+
+    Mat read0, read1;
+    ASSERT_TRUE(cap.read(read0));
+    ASSERT_TRUE(cap.read(read1));
+
+    Mat decodedRef0 = imdecode(buf0, IMREAD_COLOR);
+    Mat decodedRef1 = imdecode(buf1, IMREAD_COLOR);
+    ASSERT_FALSE(decodedRef0.empty());
+    ASSERT_FALSE(decodedRef1.empty());
+    ASSERT_EQ(read0.size(), decodedRef0.size());
+    ASSERT_EQ(read1.size(), decodedRef1.size());
+
+    // JPEG re-encoding is not bit exact, but a correctly decoded frame stays
+    // within a couple of intensity levels per channel; a stale conversion
+    // context (the bug) produces gross corruption of tens of levels.
+    const double maeThreshold = 5.0;
+
+    Mat diff0, diff1;
+    absdiff(read0, decodedRef0, diff0);
+    absdiff(read1, decodedRef1, diff1);
+    Scalar mae0 = mean(diff0);
+    Scalar mae1 = mean(diff1);
+    for (int c = 0; c < 3; c++)
+    {
+        EXPECT_LE(mae0[c], maeThreshold)
+            << "First frame (channel " << c << ") decoded incorrectly";
+        EXPECT_LE(mae1[c], maeThreshold)
+            << "Second frame (channel " << c << ") decoded incorrectly after pixel format change mid-stream";
+    }
+
+    remove(filename.c_str());
+}
+#endif
 
 }} // namespace

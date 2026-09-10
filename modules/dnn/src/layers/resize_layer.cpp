@@ -140,14 +140,20 @@ public:
         {
             // INTER_LINEAR Resize mode does not support INT8 inputs
             InterpolationFlags mode = interpolation == "nearest" ? INTER_NEAREST : INTER_LINEAR;
-            for (size_t n = 0; n < inputs[0].size[0]; ++n)
-            {
-                for (size_t ch = 0; ch < inputs[0].size[1]; ++ch)
+
+            size_t nbatch = inputs[0].size[0];
+            size_t nch = inputs[0].size[1];
+            size_t total_planes = nbatch * nch;
+
+            parallel_for_(Range(0, (int)total_planes), [&](const Range& range){
+                for (int i = range.start; i < range.end; ++i)
                 {
+                    int n = i / nch;
+                    int ch = i % nch;
                     resize(getPlane(inp, n, ch), getPlane(out, n, ch),
                            Size(outWidth, outHeight), 0, 0, mode);
                 }
-            }
+            });
         }
         else if (interpolation == "nearest")
         {
@@ -394,17 +400,30 @@ public:
 
         attrs.nearest_mode = ov::op::v4::Interpolate::NearestMode::ROUND_PREFER_FLOOR;
 
-
-        std::vector<int64_t> shape = {outHeight, outWidth};
-        auto out_shape = std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{2}, shape.data());
-
-        auto& input_shape = ieInpNode.get_shape();
-        CV_Assert_N(input_shape[2] != 0, input_shape[3] != 0);
-        std::vector<float> scales = {static_cast<float>(outHeight) / input_shape[2], static_cast<float>(outWidth) / input_shape[3]};
-        auto scales_shape = std::make_shared<ov::op::v0::Constant>(ov::element::f32, ov::Shape{2}, scales.data());
+        std::shared_ptr<ov::Node> out_shape_node;
+        std::shared_ptr<ov::Node> scales_node;
+        if (nodes.size() == 2)
+        {
+            auto& ieRefNode = nodes[1].dynamicCast<InfEngineNgraphNode>()->node;
+            auto ref_shape = std::make_shared<ov::op::v3::ShapeOf>(ieRefNode, ov::element::i64);
+            auto hw_indices = std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{2}, std::vector<int64_t>{2, 3});
+            auto gather_axis = std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{}, 0LL);
+            out_shape_node = std::make_shared<ov::op::v8::Gather>(ref_shape, hw_indices, gather_axis);
+            std::vector<float> dummy_scales = {1.0f, 1.0f};
+            scales_node = std::make_shared<ov::op::v0::Constant>(ov::element::f32, ov::Shape{2}, dummy_scales.data());
+        }
+        else
+        {
+            std::vector<int64_t> shape = {outHeight, outWidth};
+            out_shape_node = std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{2}, shape.data());
+            auto& input_shape = ieInpNode.get_shape();
+            CV_Assert_N(input_shape[2] != 0, input_shape[3] != 0);
+            std::vector<float> scales = {static_cast<float>(outHeight) / input_shape[2],static_cast<float>(outWidth) / input_shape[3]};
+            scales_node = std::make_shared<ov::op::v0::Constant>(ov::element::f32, ov::Shape{2}, scales.data());
+        }
 
         auto axes = std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{2}, std::vector<int64_t>{2, 3});
-        auto interp = std::make_shared<ov::op::v4::Interpolate>(ieInpNode, out_shape, scales_shape, axes, attrs);
+        auto interp = std::make_shared<ov::op::v4::Interpolate>(ieInpNode, out_shape_node, scales_node, axes, attrs);
         return Ptr<BackendNode>(new InfEngineNgraphNode(interp));
     }
 #endif  // HAVE_DNN_NGRAPH
@@ -444,8 +463,8 @@ public:
     }
 #endif
 
-    virtual bool tryQuantize(const std::vector<std::vector<float> > &scales,
-                             const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
         return true;
     }

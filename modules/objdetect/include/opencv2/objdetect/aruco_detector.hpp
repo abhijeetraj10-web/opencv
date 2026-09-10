@@ -20,6 +20,8 @@ enum CornerRefineMethod{
     CORNER_REFINE_APRILTAG, ///< Tag and corners detection based on the AprilTag 2 approach @cite wang2016iros
 };
 
+static constexpr float DEFAULT_VALID_BIT_ID_THRESHOLD{0.49f};
+
 /** @brief struct DetectorParameters is used by ArucoDetector
  */
 struct CV_EXPORTS_W_SIMPLE DetectorParameters {
@@ -49,7 +51,7 @@ struct CV_EXPORTS_W_SIMPLE DetectorParameters {
         aprilTagQuadSigma = 0.0;
         aprilTagMinClusterPixels = 5;
         aprilTagMaxNmaxima = 10;
-        aprilTagCriticalRad = (float)(10* CV_PI /180);
+        aprilTagCriticalRad = (float)(10 * CV_PI / 180);
         aprilTagMaxLineFitMse = 10.0;
         aprilTagMinWhiteBlackDiff = 5;
         aprilTagDeglitch = 0;
@@ -57,6 +59,7 @@ struct CV_EXPORTS_W_SIMPLE DetectorParameters {
         useAruco3Detection = false;
         minSideLengthCanonicalImg = 32;
         minMarkerLengthRatioOriginalImg = 0.0;
+        validBitIdThreshold = DEFAULT_VALID_BIT_ID_THRESHOLD;
     }
 
     /** @brief Read a new set of DetectorParameters from FileNode (use FileStorage.root()).
@@ -168,12 +171,12 @@ struct CV_EXPORTS_W_SIMPLE DetectorParameters {
      */
     CV_PROP_RW double maxErroneousBitsInBorderRate;
 
-    /** @brief minimun standard deviation in pixels values during the decodification step to apply Otsu
+    /** @brief minimum standard deviation in pixels values during the decodification step to apply Otsu
      * thresholding (otherwise, all the bits are set to 0 or 1 depending on mean higher than 128 or not) (default 5.0)
      */
     CV_PROP_RW double minOtsuStdDev;
 
-    /// error correction rate respect to the maximun error correction capability for each dictionary (default 0.6).
+    /// error correction rate respect to the maximum error correction capability for each dictionary (default 0.6).
     CV_PROP_RW double errorCorrectionRate;
 
     /** @brief April :: User-configurable parameters.
@@ -231,6 +234,9 @@ struct CV_EXPORTS_W_SIMPLE DetectorParameters {
 
     /// range [0,1], eq (2) from paper. The parameter tau_i has a direct influence on the processing speed.
     CV_PROP_RW float minMarkerLengthRatioOriginalImg;
+
+    /// range [0,1], define the acceptable threshold when comparing the detected marker to the dictionary during marker identification.
+    CV_PROP_RW float validBitIdThreshold;
 };
 
 /** @brief struct RefineParameters is used by ArucoDetector
@@ -258,7 +264,7 @@ struct CV_EXPORTS_W_SIMPLE RefineParameters {
      */
     CV_PROP_RW float errorCorrectionRate;
 
-    /** @brief checkAllOrders consider the four posible corner orders in the rejectedCorners array.
+    /** @brief checkAllOrders consider the four possible corner orders in the rejectedCorners array.
      *
      * If it set to false, only the provided corner order is considered (default true).
      */
@@ -316,6 +322,33 @@ public:
      * @sa undistort, estimatePoseSingleMarkers,  estimatePoseBoard
      */
     CV_WRAP void detectMarkers(InputArray image, OutputArrayOfArrays corners, OutputArray ids,
+                               OutputArrayOfArrays rejectedImgPoints = noArray()) const;
+
+    /** @brief Marker detection with confidence computation
+     *
+     * @param image input image
+     * @param corners vector of detected marker corners. For each marker, its four corners
+     * are provided, (e.g std::vector<std::vector<cv::Point2f> > ). For N detected markers,
+     * the dimensions of this array is Nx4. The order of the corners is clockwise.
+     * @param ids vector of identifiers of the detected markers. The identifier is of type int
+     * (e.g. std::vector<int>). For N detected markers, the size of ids is also N.
+     * The identifiers have the same order than the markers in the imgPoints array.
+     * @param markersConfidence contains the normalized confidence [0;1] of the markers' detection,
+     * defined as 1 minus the normalized uncertainty (percentage of incorrect pixel detections),
+     * with 1 describing a pixel perfect detection. The confidence values are of type float
+     * (e.g. std::vector<float>)
+     * @param rejectedImgPoints contains the imgPoints of those squares whose inner code has not a
+     * correct codification. Useful for debugging purposes.
+     *
+     * Performs marker detection in the input image. Only markers included in the first specified dictionary
+     * are searched. For each detected marker, it returns the 2D position of its corner in the image
+     * and its corresponding identifier.
+     * Note that this function does not perform pose estimation.
+     * @note The function does not correct lens distortion or takes it into account. It's recommended to undistort
+     * input image with corresponding camera model, if camera parameters are known
+     * @sa undistort, estimatePoseSingleMarkers,  estimatePoseBoard
+     */
+    CV_WRAP void detectMarkersWithConfidence(InputArray image, OutputArrayOfArrays corners, OutputArray ids, OutputArray markersConfidence,
                                OutputArrayOfArrays rejectedImgPoints = noArray()) const;
 
     /** @brief Refine not detected markers based on the already detected and the board layout

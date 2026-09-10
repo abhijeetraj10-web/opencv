@@ -146,7 +146,7 @@ void Core_PowTest::get_minmax_bounds( int /*i*/, int /*j*/, int type, Scalar& lo
     if( power > 0 )
     {
         double mval = cvtest::getMaxVal(type);
-        double u1 = pow(mval,1./power)*2;
+        double u1 = std::pow(mval,1./power)*2;
         u = MIN(u,u1);
     }
 
@@ -322,7 +322,7 @@ void Core_PowTest::prepare_to_validation( int /*test_case_idx*/ )
                     for( j = 0; j < ncols; j++ )
                     {
                         double val = ((float*)a_data)[j];
-                        val = pow( fabs(val), power );
+                        val = std::pow( fabs(val), power );
                         ((float*)b_data)[j] = (float)val;
                     }
                 else
@@ -340,7 +340,7 @@ void Core_PowTest::prepare_to_validation( int /*test_case_idx*/ )
                     for( j = 0; j < ncols; j++ )
                     {
                         double val = ((double*)a_data)[j];
-                        val = pow( fabs(val), power );
+                        val = std::pow( fabs(val), power );
                         ((double*)b_data)[j] = (double)val;
                     }
                 else
@@ -2394,7 +2394,7 @@ void Core_SolvePolyTest::run( int )
             for (int j = 0; j < n; ++j)
             {
                 s += fabs(r[j].real()) + fabs(r[j].imag());
-                div += sqrt(pow(r[j].real() - ar[j].real(), 2) + pow(r[j].imag() - ar[j].imag(), 2));
+                div += sqrt(std::pow(r[j].real() - ar[j].real(), 2) + std::pow(r[j].imag() - ar[j].imag(), 2));
             }
             div /= s;
             pass = pass && div < err_eps;
@@ -2618,6 +2618,33 @@ TEST(Core_SolveCubic, regression_27323)
     }
 }
 
+TEST(Core_SolveCubic, regression_27748)
+{
+    // a is extremely small relative to others (approx 1.8e-19 ratio),
+    // causing instability in standard cubic formula.
+    double a = 1.56041e-17;
+    double b = 84.4504;
+    double c = -96.795;
+    double d = 13.6826;
+
+    Mat coeffs = (Mat_<double>(1, 4) << a, b, c, d);
+    Mat roots;
+
+    int n = solveCubic(coeffs, roots);
+
+    // Expecting quadratic behavior (2 roots)
+    EXPECT_GE(n, 2);
+
+    // Verify roots satisfy the FULL cubic equation
+    for(int i = 0; i < n; i++)
+    {
+        double x = roots.at<double>(i);
+        double val = a*x*x*x + b*x*x + c*x + d;
+        // Check residual is small
+        EXPECT_LE(fabs(val), 1e-6) << "Root " << x << " does not satisfy the equation";
+    }
+}
+
 TEST(Core_SolvePoly, regression_5599)
 {
     // x^4 - x^2 = 0, roots: 1, -1, 0, 0
@@ -2649,6 +2676,93 @@ TEST(Core_SolvePoly, regression_5599)
         ASSERT_EQ(CV_32FC2, r.type());
         checkRoot<float>(r, 1, 0);
         checkRoot<float>(r, 1, 0);
+    }
+}
+
+TEST(Core_SolvePoly, regression_23644)
+{
+    // x^2 - 2x - 3 = 0,  roots: 3, -1
+    cv::Mat coefs = (cv::Mat_<float>(1,3) << -3, -2, 1 );
+    cv::Mat r;
+    double prec;
+    prec = cv::solvePoly(coefs, r);
+    EXPECT_LE(prec, 1e-6);
+    EXPECT_EQ(2u, r.total());
+    ASSERT_EQ(CV_32FC2, r.type());
+    checkRoot<float>(r, 3, 0);
+    checkRoot<float>(r, -1, 0);
+}
+
+TEST(Core_SolvePoly, degree_2_polynomials)
+{
+    cv::Mat_<float> coefs(1,3);
+    cv::Mat r;
+    double prec;
+    for (float c0 = -20; c0 <= 20; c0++)
+    {
+        coefs.at<float>(0) = c0;
+        for (float c1 = -20; c1 <= 20; c1++)
+        {
+            coefs.at<float>(1) = c1;
+            for (float c2 = -20; c2 <= 20; c2++)
+            {
+                coefs.at<float>(2) = c2;
+                prec = cv::solvePoly(coefs, r);
+                EXPECT_LE(prec, 1e-6);
+            }
+        }
+    }
+}
+
+TEST(Core_SolvePoly, degree_4_polynomials)
+{
+    applyTestTag(CV_TEST_TAG_VERYLONG);
+
+    cv::Mat_<float> coefs(1,5);
+    cv::Mat r;
+    double prec;
+    for (float c0 = -10; c0 <= 10; c0++)
+    {
+        coefs.at<float>(0) = c0;
+        for (float c1 = -10; c1 <= 10; c1++)
+        {
+            coefs.at<float>(1) = c1;
+            for (float c2 = -10; c2 <= 10; c2++)
+            {
+                coefs.at<float>(2) = c2;
+                for (float c3 = -10; c3 <= 10; c3++)
+                {
+                    coefs.at<float>(3) = c3;
+                    for (float c4 = -10; c4 <= 10; c4++)
+                    {
+                        coefs.at<float>(4) = c4;
+                        prec = cv::solvePoly(coefs, r);
+                        EXPECT_LE(prec, 1e-3);
+                    }
+                }
+            }
+        }
+    }
+}
+
+TEST(Core_SolvePoly, different_magnitudes_polynomials)
+{
+    cv::Mat_<float> coefs(1,3);
+    cv::Mat r;
+    double prec;
+    for (float i = -10; i < 10; i++)
+    {
+        coefs.at<float>(0) = pow(2.f, i);
+        for (float j = -10; j < 10; j++)
+        {
+            coefs.at<float>(1) = pow(2.f, j);
+            for (float k = -10; k < 10; k++)
+            {
+                coefs.at<float>(2) = pow(2.f, k);
+                prec = cv::solvePoly(coefs, r);
+                EXPECT_LE(prec, 1e-6);
+            }
+        }
     }
 }
 
@@ -4201,6 +4315,178 @@ TEST(Core_FastMath, InlineIsInf)
     suf.u = 0x7FF0000012345678UL;
     EXPECT_EQ( cvIsInf(suf.f), 0);
 }
+
+////////////////////////////////////////////////////////////////////////////
+// See https://github.com/opencv/opencv/issues/28930
+typedef testing::TestWithParam<std::tuple<int,int,int,int, int>> Core_Point_DotProduct_regression28930;
+
+TEST_P(Core_Point_DotProduct_regression28930, basic)
+{
+    const int x1 = std::get<0>(GetParam());
+    const int y1 = std::get<1>(GetParam());
+    const int x2 = std::get<2>(GetParam());
+    const int y2 = std::get<3>(GetParam());
+    const int expect = std::get<4>(GetParam());
+
+    cv::Point pt1(x1, y1);
+    cv::Point pt2(x2, y2);
+
+    EXPECT_EQ(pt1.dot(pt2), expect) << "Failed for: (" << x1 << "," << y1 << ") dot (" << x2 << "," << y2 << ")";
+}
+
+INSTANTIATE_TEST_CASE_P(/* */, Core_Point_DotProduct_regression28930,
+testing::Values(
+    // 1. INT_MIN*INT_MIN + INT_MIN*INT_MIN = 2^62 + 2^62 => Saturates to MAX
+    std::make_tuple(  INT_MIN, INT_MIN,
+                      INT_MIN, INT_MIN,
+                      INT_MAX),
+
+    // 2. INT_MIN*INT_MAX + INT_MAX*INT_MAX = 4611686014132420609 + -4611686016279904256 = -2147483647
+    std::make_tuple(  INT_MAX, INT_MIN,
+                      INT_MAX, INT_MAX,
+                     -2147483647),
+
+    // 3. INT_MAX*INT_MAX + INT_MAX*INT_MIN = 4611686014132420609 + -4611686016279904256 = -2147483647
+    std::make_tuple(  INT_MAX, INT_MAX,
+                      INT_MAX, INT_MIN,
+                     -2147483647),
+
+    // 4. 46340^2 = 2147395600 (Under INT_MAX)
+    std::make_tuple(  46340, 0,
+                      46340, 0,
+                      2147395600),
+
+    // 5. 46341^2 = 2147488281 (Over INT_MAX) => Saturates to MAX
+    std::make_tuple(  46341, 0,
+                      46341, 0,
+                      INT_MAX),
+
+    // 6. -46340 * 46340 = -2147395600 (Over INT_MIN)
+    std::make_tuple( -46340, 0,
+                      46340, 0,
+                     -2147395600),
+
+    // 7. -46341 * 46341 = -2147488281 (Under INT_MIN) => Saturates to MIN
+    std::make_tuple( -46341, 0,
+                      46341, 0,
+                      INT_MIN),
+
+    // 8. Zero
+    std::make_tuple(  0, 0,
+                      0, 0,
+                      0),
+
+    // 9. Simple max
+    std::make_tuple(  INT_MAX, 0,
+                            1, 0,
+                      INT_MAX)
+));
+
+typedef testing::TestWithParam<std::tuple<int,int,int,int,int,int,  int>> Core_Point3i_DotProduct_regression28930;
+
+TEST_P(Core_Point3i_DotProduct_regression28930, basic)
+{
+    const int x1 = std::get<0>(GetParam());
+    const int y1 = std::get<1>(GetParam());
+    const int z1 = std::get<2>(GetParam());
+    const int x2 = std::get<3>(GetParam());
+    const int y2 = std::get<4>(GetParam());
+    const int z2 = std::get<5>(GetParam());
+    const int expect = std::get<6>(GetParam());
+
+    cv::Point3i pt1(x1, y1, z1);
+    cv::Point3i pt2(x2, y2, z2);
+
+    EXPECT_EQ(pt1.dot(pt2), expect) << "Failed for: (" << x1 << "," << y1 << "," << z1 << ") dot (" << x2 << "," << y2 << "," << z2 << ")";
+}
+
+INSTANTIATE_TEST_CASE_P(/* */, Core_Point3i_DotProduct_regression28930,
+testing::Values(
+    // 1. INT_MIN*INT_MIN + INT_MIN*INT_MIN = 2^62 + 2^62 => Saturates to MAX
+    std::make_tuple(  INT_MIN, INT_MIN, 0,
+                      INT_MIN, INT_MIN, 0,
+                      INT_MAX),
+
+    // 2. INT_MIN*INT_MAX + INT_MAX*INT_MAX = 4611686014132420609 + -4611686016279904256 = -2147483647
+    std::make_tuple(  INT_MAX, INT_MIN, 0,
+                      INT_MAX, INT_MAX, 0,
+                     -2147483647),
+
+    // 3. INT_MAX*INT_MAX + INT_MAX*INT_MIN = 4611686014132420609 + -4611686016279904256 = -2147483647
+    std::make_tuple(  INT_MAX, INT_MAX, 0,
+                      INT_MAX, INT_MIN, 0,
+                     -2147483647),
+
+    // 4. 46340^2 = 2147395600 (Under INT_MAX)
+    std::make_tuple(  46340, 0, 0,
+                      46340, 0, 0,
+                      2147395600),
+
+    // 5. 46341^2 = 2147488281 (Over INT_MAX) => Saturates to MAX
+    std::make_tuple(  46341, 0, 0,
+                      46341, 0, 0,
+                      INT_MAX),
+
+    // 6. -46340 * 46340 = -2147395600 (Over INT_MIN)
+    std::make_tuple( -46340, 0, 0,
+                      46340, 0, 0,
+                     -2147395600),
+
+    // 7. -46341 * 46341 = -2147488281 (Under INT_MIN) => Saturates to MIN
+    std::make_tuple( -46341, 0, 0,
+                      46341, 0, 0,
+                      INT_MIN),
+
+    // 8. Zero
+    std::make_tuple(  0, 0, 0,
+                      0, 0, 0,
+                      0),
+
+    // 9. Simple max
+    std::make_tuple(  INT_MAX, 0, 0,
+                            1, 0, 0,
+                      INT_MAX),
+
+    // 10. All positive, no overflow
+    std::make_tuple(  1, 2, 3,
+                      4, 5, 6,
+                      (1*4 + 2*5 + 3*6)),
+
+    // 11. All negative, no overflow
+    std::make_tuple( -1, -2, -3,
+                     -4, -5, -6,
+                     (-1*-4 + -2*-5 + -3*-6)),
+
+    // 12. Three large positive products => saturate to MAX
+    std::make_tuple(  INT_MAX, INT_MAX, INT_MAX,
+                      INT_MAX, INT_MAX, INT_MAX,
+                      INT_MAX),
+
+    // 13. Three large positive products from INT_MIN*INT_MIN => saturate to MAX
+    std::make_tuple(  INT_MIN, INT_MIN, INT_MIN,
+                      INT_MIN, INT_MIN, INT_MIN,
+                      INT_MAX),
+
+    // 14. Three large negative products => saturate to MIN
+    std::make_tuple(  INT_MIN, INT_MIN, INT_MIN,
+                      INT_MAX, INT_MAX, INT_MAX,
+                      INT_MIN),
+
+    // 15. Mixed signs: + + -
+    std::make_tuple(  INT_MAX, INT_MAX, INT_MIN,
+                      INT_MAX, INT_MAX, INT_MAX,
+                      INT_MAX),
+
+    // 16. Mixed signs: + - +
+    std::make_tuple(  INT_MAX, INT_MIN, INT_MAX,
+                      INT_MAX, INT_MAX, INT_MAX,
+                      INT_MAX),
+
+    // 17. Mixed signs: - + -
+    std::make_tuple(  INT_MIN, INT_MAX, INT_MIN,
+                      INT_MAX, INT_MAX, INT_MAX,
+                      INT_MIN)
+));
 
 }} // namespace
 /* End of file. */

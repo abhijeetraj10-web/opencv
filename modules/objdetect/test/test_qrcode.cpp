@@ -571,6 +571,54 @@ TEST(Objdetect_QRCode_decode, decode_regression_version_25)
     EXPECT_EQ(expect_msg, decoded_msg);
 }
 
+TEST(Objdetect_QRCode_decode, decode_alphanumeric_out_of_range)
+{
+    // Version 1 QR with a valid Reed-Solomon block whose alphanumeric segment
+    // carries an 11-bit pair value of 2047. decodeAlpha computes 2047 / 45 == 45
+    // and used to read map[45], one past the 45-entry table, leaking an adjacent
+    // byte into the decoded string. The decoder must reject it and return an
+    // empty string instead.
+    static const char* modules[21] = {
+        "000000011011010000000",
+        "011111010011010111110",
+        "010001011011010100010",
+        "010001010011010100010",
+        "010001011011010100010",
+        "011111010011010111110",
+        "000000010101010000000",
+        "111111111011011111111",
+        "000001000011001010101",
+        "111111101001011011000",
+        "000111010001011011000",
+        "001001100111011011000",
+        "000001011011011011000",
+        "111111110101011011000",
+        "000000010111011011001",
+        "011111011101011011001",
+        "010001010001011011011",
+        "010001010001011011011",
+        "010001010001011011011",
+        "011111010001011011010",
+        "000000010001011011011"
+    };
+    Mat qr(21, 21, CV_8UC1);
+    for (int i = 0; i < 21; i++)
+        for (int j = 0; j < 21; j++)
+            qr.at<uchar>(i, j) = modules[i][j] == '1' ? 255 : 0;
+
+    Mat src;
+    cv::resize(qr, src, qr.size() * 10, 0, 0, INTER_NEAREST);
+    cv::copyMakeBorder(src, src, 40, 40, 40, 40, BORDER_CONSTANT, Scalar(255));
+
+    QRCodeDetector qrcode;
+    std::vector<Point> corners;
+    ASSERT_TRUE(qrcode.detect(src, corners));
+    Mat straight_barcode;
+    std::string decoded_info;
+    EXPECT_NO_THROW(decoded_info = qrcode.decode(src, corners, straight_barcode));
+    EXPECT_TRUE(decoded_info.empty());
+}
+
 TEST_P(Objdetect_QRCode_detectAndDecodeMulti, decode_9_qrcodes_version7)
 {
     const std::string name_current_image = "9_qrcodes_version7.jpg";
@@ -677,6 +725,42 @@ TEST(Objdetect_QRCode_detect, detect_regression_22892)
     Mat straight_code;
     qrcode.detectAndDecodeCurved(img, corners, straight_code);
     EXPECT_EQ(corners.size(), 4U);
+}
+
+// See https://github.com/opencv/opencv/issues/27783
+TEST(Objdetect_QRCode_detect, detect_regression_27783)
+{
+    const std::string name_current_image = "9_qrcodes.jpg";
+    const std::string root = "qrcode/multiple/";
+
+    std::string image_path = findDataFile(root + name_current_image);
+    Mat src = imread(image_path);
+    ASSERT_FALSE(src.empty()) << "Can't read image: " << image_path;
+
+    std::vector<std::string> info;
+    std::vector<Point> corners;
+
+    {
+        // If default, we can decode 9 QRs.
+        QRCodeDetector qrcode;
+        EXPECT_TRUE(qrcode.detectAndDecodeMulti(src, info, corners));
+        ASSERT_EQ(info.size(), 9UL);
+        ASSERT_EQ(corners.size(), 36UL);
+    }
+
+    {
+        // If setEpsX is too small, we can decode no QRs.
+        QRCodeDetector qrcode;
+        qrcode.setEpsX(0.01);
+        EXPECT_FALSE(qrcode.detectAndDecodeMulti(src, info, corners));
+    }
+
+    {
+        // If setEpsY is too small, we can decode no QRs.
+        QRCodeDetector qrcode;
+        qrcode.setEpsY(0.01);
+        EXPECT_FALSE(qrcode.detectAndDecodeMulti(src, info, corners));
+    }
 }
 
 }} // namespace

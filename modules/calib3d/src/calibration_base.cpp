@@ -43,8 +43,6 @@
 #include "precomp.hpp"
 #include "hal_replacement.hpp"
 #include "distortion_model.hpp"
-#include "opencv2/calib3d/calib3d_c.h"
-#include "opencv2/core/core_c.h"
 #include <stdio.h>
 #include <iterator>
 
@@ -1237,7 +1235,7 @@ void cv::findExtrinsicCameraParams2( const Mat& objectPoints,
     Mat matU( 3, 3, CV_64F, U );
     Mat matV( 3, 3, CV_64F, V );
     Mat matW( 3, 1, CV_64F, W );
-    Mat _param( 6, 1, CV_64F, param );
+    Mat1d _param( 6, 1, param );
     Mat _dpdr, _dpdt;
 
     count = MAX(objectPoints.cols, objectPoints.rows);
@@ -1394,7 +1392,7 @@ void cv::findExtrinsicCameraParams2( const Mat& objectPoints,
 
     // refine extrinsic parameters using iterative algorithm
 #if 0
-    // The C++ LMSolver is not as good as CvLevMarq to pass the tests, maybe due to _completeSymmFlag in CvLevMarq.
+    // The C++ LMSolver is not as good as LevMarq to pass the tests, maybe due to _completeSymmFlag in LevMarq.
     class RefineLMCallback CV_FINAL : public LMSolver::Callback
     {
     public:
@@ -1437,23 +1435,23 @@ void cv::findExtrinsicCameraParams2( const Mat& objectPoints,
 
     LMSolver::create(makePtr<RefineLMCallback>(matM, _m, matA, distCoeffs), max_iter, FLT_EPSILON)->run(_param);
 #else
-    CvLevMarq solver( 6, count*2, cvTermCriteria(CV_TERMCRIT_EPS+CV_TERMCRIT_ITER,max_iter,FLT_EPSILON), true);
-    _param.copyTo(cvarrToMat(solver.param));
+    LevMarq solver( 6, count*2, TermCriteria(TermCriteria::EPS + TermCriteria::COUNT,max_iter,FLT_EPSILON), true);
+    _param.copyTo(solver.param);
 
     for(;;)
     {
-        CvMat *matJ = 0, *_err = 0;
-        const CvMat *__param = 0;
-        bool proceed = solver.update( __param, matJ, _err );
-        cvarrToMat(__param).copyTo(_param );
-        if( !proceed || !_err )
+        Mat1d _err;
+        Mat1d Jac;
+        Mat1d __param;
+        bool proceed = solver.update( __param, Jac, _err );
+        __param.copyTo(_param );
+        if( !proceed || _err.empty() )
             break;
         int errCount = matM.rows + matM.cols - 1;
-        Mat err = cvarrToMat(_err);
+        Mat err = _err;
         err = err.reshape(2, errCount);
-        if( matJ )
+        if( !Jac.empty() )
         {
-            Mat Jac = cvarrToMat(matJ);
             Mat dpdr = Jac.colRange(0, 3);
             Mat dpdt = Jac.colRange(3, 6);
             projectPoints(matM, _r, _t, matA, distCoeffs,
@@ -1464,9 +1462,8 @@ void cv::findExtrinsicCameraParams2( const Mat& objectPoints,
             projectPoints(matM, _r, _t, matA, distCoeffs, err);
         }
         subtract(err, _m.rows == 1 ? _m.t() : _m, err);
-        cvReshape( _err, _err, 1, 2*count );
     }
-    cvarrToMat(solver.param).copyTo(_param );
+    solver.param.copyTo(_param );
 #endif
 
     _param.rowRange(0, 3).convertTo(rvec, rvec.depth());

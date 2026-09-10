@@ -18,7 +18,7 @@
 //    software: "Method and apparatus for identifying scale invariant features
 //    in an image and use of same for locating an object in an image," David
 //    G. Lowe, US Patent 6,711,293 (March 23, 2004). Provisional application
-//    filed March 8, 1999. Asignee: The University of British Columbia. For
+//    filed March 8, 1999. Assignee: The University of British Columbia. For
 //    further details, contact David Lowe (lowe@cs.ubc.ca) or the
 //    University-Industry Liaison Office of the University of British
 //    Columbia.
@@ -225,16 +225,16 @@ void SIFT_Impl::buildGaussianPyramid( const Mat& base, std::vector<Mat>& pyr, in
 {
     CV_TRACE_FUNCTION();
 
-    std::vector<double> sig(nOctaveLayers + 3);
+    AutoBuffer<double> sig(nOctaveLayers + 3);
     pyr.resize(nOctaves*(nOctaveLayers + 3));
 
     // precompute Gaussian sigmas using the following formula:
     //  \sigma_{total}^2 = \sigma_{i}^2 + \sigma_{i-1}^2
     sig[0] = sigma;
-    double k = std::pow( 2., 1. / nOctaveLayers );
+    double k = std::pow( 2, 1. / nOctaveLayers );
     for( int i = 1; i < nOctaveLayers + 3; i++ )
     {
-        double sig_prev = std::pow(k, (double)(i-1))*sigma;
+        double sig_prev = (double)std::pow(k, i-1)*sigma;
         double sig_total = sig_prev*k;
         sig[i] = std::sqrt(sig_total*sig_total - sig_prev*sig_prev);
     }

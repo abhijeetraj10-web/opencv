@@ -168,6 +168,9 @@ inline schar c_absdiff(schar a, schar b)
 template<>
 inline short c_absdiff(short a, short b)
 { return saturate_cast<short>(std::abs(a - b)); }
+template<> inline int c_absdiff<int>(int a, int b){
+    return (int)((unsigned)std::max(a, b) - (unsigned)std::min(a, b));
+}
 // specializations to prevent "-0" results
 template<>
 inline float c_absdiff<float>(float a, float b)
@@ -1437,6 +1440,15 @@ struct op_mul
     { return saturate_cast<T1>(a * b); }
 };
 
+template<typename Tvec>
+struct op_mul<uint16_t, Tvec>
+{
+    static inline Tvec r(const Tvec& a, const Tvec& b)
+    { return v_mul(a, b); }
+    static inline uint16_t r(uint16_t a, uint16_t b)
+    { return saturate_cast<uint16_t>(static_cast<uint32_t>(a) * static_cast<uint32_t>(b)); }
+};
+
 template<typename T1, typename T2, typename Tvec>
 struct op_mul_scale
 {
@@ -1557,7 +1569,7 @@ void mul_loop_d<double, v_float64>(const double* src1, size_t step1, const doubl
     DEFINE_SIMD_FUN(fun, _T1, v_float64, _OP)
 
 DEFINE_SIMD_SAT(mul, mul_loop)
-DEFINE_SIMD_F32(mul, mul_loop_d)
+DEFINE_SIMD_F32(mul, mul_loop)
 DEFINE_SIMD_S32(mul, mul_loop_d)
 DEFINE_SIMD_F64(mul, mul_loop_d)
 
@@ -1825,7 +1837,7 @@ void add_weighted_loop_d<double, v_float64>(const double* src1, size_t step1, co
 
 DEFINE_SIMD_SAT(addWeighted, add_weighted_loop)
 DEFINE_SIMD_S32(addWeighted, add_weighted_loop_d)
-DEFINE_SIMD_F32(addWeighted, add_weighted_loop_d)
+DEFINE_SIMD_F32(addWeighted, add_weighted_loop)
 DEFINE_SIMD_F64(addWeighted, add_weighted_loop_d)
 
 //=======================================

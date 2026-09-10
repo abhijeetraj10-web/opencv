@@ -287,7 +287,8 @@ TFLiteImporter::DispatchMap TFLiteImporter::buildDispatchMap()
     dispatch["DEPTHWISE_CONV_2D"] = &TFLiteImporter::parseDWConvolution;
     dispatch["ADD"] = dispatch["MUL"] = dispatch["SUB"] =
         dispatch["SQRT"] = dispatch["DIV"] = dispatch["NEG"] =
-        dispatch["RSQRT"] = dispatch["SQUARED_DIFFERENCE"] = &TFLiteImporter::parseEltwise;
+        dispatch["RSQRT"] = dispatch["SQUARED_DIFFERENCE"] =
+        dispatch["MAXIMUM"] = dispatch["MINIMUM"]= &TFLiteImporter::parseEltwise;
     dispatch["RELU"] = dispatch["PRELU"] = dispatch["HARD_SWISH"] =
         dispatch["LOGISTIC"] = dispatch["LEAKY_RELU"] = &TFLiteImporter::parseActivation;
     dispatch["MAX_POOL_2D"] = dispatch["AVERAGE_POOL_2D"] = &TFLiteImporter::parsePooling;
@@ -441,6 +442,7 @@ void TFLiteImporter::parseConvolution(const Operator& op, const std::string& opc
         if (filterScales->size() == 1) {
             layerParams.blobs[2].setTo(inpScale * filterScales->Get(0) / outScale);
         } else {
+            CV_CheckEQ((int)filterScales->size(), oc, "TFLite: number of filter quantization scales must match the number of output channels");
             for (size_t i = 0; i < filterScales->size(); ++i) {
                 layerParams.blobs[2].at<float>(i) = inpScale * filterScales->Get(i) / outScale;
             }
@@ -503,6 +505,7 @@ void TFLiteImporter::parseDWConvolution(const Operator& op, const std::string& o
         if (filterScales->size() == 1) {
             layerParams.blobs[2].setTo(inpScale * filterScales->Get(0) / outScale);
         } else {
+            CV_CheckEQ((int)filterScales->size(), oc, "TFLite: number of filter quantization scales must match the number of output channels");
             for (size_t i = 0; i < filterScales->size(); ++i) {
                 layerParams.blobs[2].at<float>(i) = inpScale * filterScales->Get(i) / outScale;
             }
@@ -526,16 +529,19 @@ void TFLiteImporter::parsePadding(const Operator& op, const std::string& opcode,
     Mat paddings = allTensors[op.inputs()->Get(1)].clone();
 
     CV_CheckTypeEQ(paddings.type(), CV_32S, "");
-    //  N    H    W    C
-    // 0 1  2 3  4 5  6 7
-    std::swap(paddings.at<int32_t>(2), paddings.at<int32_t>(6));
-    std::swap(paddings.at<int32_t>(3), paddings.at<int32_t>(7));
-    //  N    C    W    H
-    // 0 1  2 3  4 5  6 7
-    std::swap(paddings.at<int32_t>(4), paddings.at<int32_t>(6));
-    std::swap(paddings.at<int32_t>(5), paddings.at<int32_t>(7));
-    //  N    C    H    W
-    // 0 1  2 3  4 5  6 7
+    if (paddings.total() == 8)
+    {
+        //  N    H    W    C
+        // 0 1  2 3  4 5  6 7
+        std::swap(paddings.at<int32_t>(2), paddings.at<int32_t>(6));
+        std::swap(paddings.at<int32_t>(3), paddings.at<int32_t>(7));
+        //  N    C    W    H
+        // 0 1  2 3  4 5  6 7
+        std::swap(paddings.at<int32_t>(4), paddings.at<int32_t>(6));
+        std::swap(paddings.at<int32_t>(5), paddings.at<int32_t>(7));
+        //  N    C    H    W
+        // 0 1  2 3  4 5  6 7
+    }
 
     layerParams.set("paddings", DictValue::arrayInt<int32_t*>((int32_t*)paddings.data, paddings.total()));
     addLayer(layerParams, op);
@@ -577,7 +583,13 @@ void TFLiteImporter::parseEltwise(const Operator& op, const std::string& opcode,
     }
     else if (opcode == "SQRT" && !isOpInt8) {
         layerParams.type = "Sqrt";
-    } else {
+    }
+    else if (opcode == "MAXIMUM" && !isOpInt8) {
+        layerParams.set("operation", "max");
+    }
+    else if (opcode == "MINIMUM" && !isOpInt8) {
+        layerParams.set("operation", "min");
+    }else {
         CV_Error(Error::StsNotImplemented, cv::format("DNN/TFLite: Unknown opcode for %s Eltwise layer '%s'", isOpInt8 ? "INT8" : "FP32", opcode.c_str()));
     }
 
@@ -819,6 +831,7 @@ void TFLiteImporter::parseResize(const Operator& op, const std::string& opcode, 
         layerParams.set("half_pixel_centers", options->half_pixel_centers());
     }
     Mat shape = allTensors[op.inputs()->Get(1)].reshape(1, 1);
+    CV_CheckGE(shape.total(), (size_t)2, "TFLite Resize: size tensor must hold height and width");
     layerParams.set("height", shape.at<int>(0, 0));
     layerParams.set("width", shape.at<int>(0, 1));
     addLayer(layerParams, op);

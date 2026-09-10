@@ -219,7 +219,7 @@ void computeOcclusionBasedMasks( const Mat& leftDisp, const Mat& _rightDisp,
 }
 
 /*
-  Calculate depth discontinuty regions: pixels whose neiboring disparities differ by more than
+  Calculate depth discontinuity regions: pixels whose neighboring disparities differ by more than
   dispGap, dilated by window of width discontWidth.
 */
 void computeDepthDiscontMask( const Mat& disp, Mat& depthDiscontMask, const Mat& unknDispMask = Mat(),
@@ -950,6 +950,18 @@ TEST(Calib3d_StereoSGBM, deterministic) {
         EXPECT_EQ(cv::countNonZero(dst), 0);
     }
 
+}
+
+TEST(Calib3d_StereoSGBM, regression_29761)
+{
+    Mat leftImg(256, 256, CV_8UC1), rightImg(256, 256, CV_8UC1);
+    randu(leftImg, Scalar(0), Scalar(255));
+    randu(rightImg, Scalar(0), Scalar(255));
+
+    Ptr<StereoSGBM> sgbm = StereoSGBM::create( 0, 64, 5, 100, 200, 1, 31, 100, 0, 0, StereoSGBM::MODE_SGBM_3WAY);
+    Mat leftDisp;
+    sgbm->compute( leftImg, rightImg, leftDisp);
+    EXPECT_EQ(countNonZero(leftDisp != -StereoMatcher::DISP_SCALE), 0);
 }
 
 TEST(Calib3d_StereoSGBM_HH4, regression)

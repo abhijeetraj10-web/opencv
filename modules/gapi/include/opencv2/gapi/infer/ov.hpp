@@ -13,6 +13,7 @@
 #include <opencv2/gapi/own/exports.hpp> // GAPI_EXPORTS
 #include <opencv2/gapi/gkernel.hpp>     // GKernelType[M], GBackend
 #include <opencv2/gapi/infer.hpp>       // Generic
+#include <opencv2/gapi/infer/workload_type.hpp>
 
 #include <map>
 
@@ -213,7 +214,7 @@ public:
 
     This function is used to ensure that all tensors in the model have names.
     It goes through all input and output nodes of the model and sets the names
-    if they are not set. This is neccessary for models with nameless tensors.
+    if they are not set. This is necessary for models with nameless tensors.
 
     If a tensor does not have a name, it will be assigned a default name
     based on the producer node's friendly name. If the producer node has multiple
@@ -745,6 +746,9 @@ namespace wip { namespace ov {
  */
 struct benchmark_mode { };
 
+class WorkloadTypeOV : public WorkloadType {};
+using WorkloadTypeOVPtr = std::shared_ptr<cv::gapi::wip::ov::WorkloadTypeOV>;
+
 } // namespace ov
 } // namespace wip
 
@@ -755,6 +759,10 @@ namespace detail
     template<> struct CompileArgTag<cv::gapi::wip::ov::benchmark_mode>
     {
         static const char* tag() { return "gapi.wip.ov.benchmark_mode"; }
+    };
+    template<> struct CompileArgTag<cv::gapi::wip::ov::WorkloadTypeOVPtr>
+    {
+        static const char* tag() { return "gapi.wip.ov.workload_type"; }
     };
 }
 

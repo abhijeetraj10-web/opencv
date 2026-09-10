@@ -159,7 +159,9 @@ int bilateralFilter(const uchar* src_data, size_t src_step,
     constexpr double eps = 1e-6;
     if( sigma_color <= eps || sigma_space <= eps )
     {
-        src.copyTo(dst);
+        const size_t row_size = width * cn * sizeof(uchar);
+        for (int y = 0; y < height; y++)
+            memcpy(dst_data + y * dst_step, src_data + y * src_step, row_size);
         return CV_HAL_ERROR_OK;
     }
 
@@ -187,7 +189,7 @@ int bilateralFilter(const uchar* src_data, size_t src_step,
 
     // calculate source border
     std::vector<uchar> padding;
-    padding.resize(cal_width * cal_height * cn);
+    padding.resize((size_t)cal_width * cal_height * cn);
     uchar* pad_data = &padding[0];
     int pad_step = cal_width * cn;
 

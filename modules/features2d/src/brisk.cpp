@@ -104,6 +104,8 @@ public:
     }
     virtual void setPatternScale(float _patternScale) CV_OVERRIDE
     {
+      CV_CheckGT(_patternScale, 0.f, "patternScale must be positive");
+
       patternScale = _patternScale;
       std::vector<float> rList;
       std::vector<int> nList;
@@ -446,7 +448,7 @@ BRISK_Impl::generateKernel(const std::vector<float> &radiusList,
   const float sigma_scale = 1.3f;
 
   for (unsigned int scale = 0; scale < scales_; ++scale) {
-      scaleList_[scale] = (float) std::pow((double) 2.0, (double) (scale * lb_scale_step));
+      scaleList_[scale] = (float) std::pow(2, scale * lb_scale_step);
       sizeList_[scale] = 0;
       BriskPatternPoint *patternIteratorOuter = patternPoints_ + (scale * n_rot_ * points_);
       // generate the pattern points look-up
@@ -626,7 +628,7 @@ BRISK_Impl::smoothedIntensity(const cv::Mat& image, const cv::Mat& integral, con
     ret_val = A * int(*ptr);
     ptr += dx + 1;
     ret_val += B * int(*ptr);
-    ptr += dy * imagecols + 1;
+    ptr += (dy + 1) * imagecols;
     ret_val += C * int(*ptr);
     ptr -= dx + 1;
     ret_val += D * int(*ptr);
@@ -2034,8 +2036,8 @@ BriskScaleSpace::subpixel2D(const int s_0_0, const int s_0_1, const int s_0_2, c
   int tmp4 = tmp3 - 2 * tmp2;
   int coeff3 = -3 * (tmp3 + s_0_1 - s_2_1);
   int coeff4 = -3 * (tmp4 + s_1_0 - s_1_2);
-  int coeff5 = (s_0_0 - s_0_2 - s_2_0 + s_2_2) << 2;
-  int coeff6 = -(s_0_0 + s_0_2 - ((s_1_0 + s_0_1 + s_1_2 + s_2_1) << 1) - 5 * s_1_1 + s_2_0 + s_2_2) << 1;
+  int coeff5 = (s_0_0 - s_0_2 - s_2_0 + s_2_2) * 4;
+  int coeff6 = -(s_0_0 + s_0_2 - ((s_1_0 + s_0_1 + s_1_2 + s_2_1) * 2) - 5 * s_1_1 + s_2_0 + s_2_2) * 2;
 
   // 2nd derivative test:
   int H_det = 4 * coeff1 * coeff2 - coeff5 * coeff5;

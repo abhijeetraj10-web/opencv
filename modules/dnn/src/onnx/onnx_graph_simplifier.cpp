@@ -1278,14 +1278,33 @@ public:
                             }
                         }
                     }
+                    // extract axis from original Gather node
+                    axis = 0;
+                    opencv_onnx::NodeProto* origGatherNode =
+                        inpNode.dynamicCast<ONNXNodeWrapper>()->node;
+                    for (int i = 0; i < origGatherNode->attribute_size(); i++) {
+                        opencv_onnx::AttributeProto attr = origGatherNode->attribute(i);
+                        if (attr.name() == "axis")
+                            axis = attr.i();
+                    }
                 }
             }
         }
         return retVal;
     }
 
+    virtual void finalize(const Ptr<ImportGraphWrapper>& net,
+                          const Ptr<ImportNodeWrapper>& fusedNode,
+                          std::vector<Ptr<ImportNodeWrapper> >& /*inputs*/) CV_OVERRIDE
+    {
+        opencv_onnx::NodeProto* node = fusedNode.dynamicCast<ONNXNodeWrapper>()->node;
+        opencv_onnx::AttributeProto* new_attr = node->add_attribute();
+        new_attr->set_name("axis");
+        new_attr->set_i(axis);
+    }
+
 private:
-    int cast, gather;
+    int cast, gather, axis;
 };
 
 /*  Constant folding shape for Expand.
@@ -1716,13 +1735,34 @@ Mat getMatFromTensor(const opencv_onnx::TensorProto& tensor_proto)
     }
     if (sizes.empty())
         sizes.assign(1, 1);
+
+    // The shape decides how many elements are read from the tensor payload below
+    // (raw_data, or one of the typed *_data fields). The payload is sized
+    // independently in the model, so a tensor whose shape claims more elements
+    // than the payload holds reads past the buffer. Validate the payload against
+    // the shape before each read.
+    const size_t size_max = std::numeric_limits<size_t>::max();
+    size_t total_elems = 1;
+    for (size_t i = 0; i < sizes.size(); i++)
+    {
+        const size_t dim = static_cast<size_t>(sizes[i]);
+        total_elems = (dim != 0 && total_elems > size_max / dim) ? size_max : total_elems * dim;
+    }
+    const auto checkPayloadSize = [&](size_t available_elems)
+    {
+        CV_CheckGE(available_elems, total_elems,
+                   "DNN/ONNX: tensor payload is smaller than its declared shape");
+    };
+
     if (datatype == opencv_onnx::TensorProto_DataType_FLOAT) {
 
         if (!tensor_proto.float_data().empty()) {
             const ::google::protobuf::RepeatedField<float> field = tensor_proto.float_data();
+            checkPayloadSize(field.size());
             Mat(sizes, CV_32FC1, (void*)field.data()).copyTo(blob);
         }
         else {
+            checkPayloadSize(tensor_proto.raw_data().size() / sizeof(float));
             char* val = const_cast<char*>(tensor_proto.raw_data().c_str());
             Mat(sizes, CV_32FC1, val).copyTo(blob);
         }
@@ -1744,6 +1784,7 @@ Mat getMatFromTensor(const opencv_onnx::TensorProto& tensor_proto)
 
             AutoBuffer<hfloat, 16> aligned_val;
             size_t sz = tensor_proto.int32_data().size();
+            checkPayloadSize(sz);
             aligned_val.allocate(sz);
             hfloat* bufPtr = aligned_val.data();
 
@@ -1756,6 +1797,7 @@ Mat getMatFromTensor(const opencv_onnx::TensorProto& tensor_proto)
         }
         else
         {
+            checkPayloadSize(tensor_proto.raw_data().size() / sizeof(hfloat));
             char* val = const_cast<char*>(tensor_proto.raw_data().c_str());
 #if CV_STRONG_ALIGNMENT
             // Aligned pointer is required.
@@ -1776,9 +1818,15 @@ Mat getMatFromTensor(const opencv_onnx::TensorProto& tensor_proto)
         const ::google::protobuf::RepeatedField<double> field = tensor_proto.double_data();
         char* val = nullptr;
         if (!field.empty())
+        {
+            checkPayloadSize(field.size());
             val = (char *)field.data();
+        }
         else
+        {
+            checkPayloadSize(tensor_proto.raw_data().size() / sizeof(double));
             val = const_cast<char*>(tensor_proto.raw_data().c_str()); // sometime, the double will be stored at raw_data.
+        }
 
 #if CV_STRONG_ALIGNMENT
         // Aligned pointer is required.
@@ -1798,10 +1846,12 @@ Mat getMatFromTensor(const opencv_onnx::TensorProto& tensor_proto)
         if (!tensor_proto.int32_data().empty())
         {
             const ::google::protobuf::RepeatedField<int32_t> field = tensor_proto.int32_data();
+            checkPayloadSize(field.size());
             Mat(sizes, CV_32SC1, (void*)field.data()).copyTo(blob);
         }
         else
         {
+            checkPayloadSize(tensor_proto.raw_data().size() / sizeof(int32_t));
             char* val = const_cast<char*>(tensor_proto.raw_data().c_str());
             Mat(sizes, CV_32SC1, val).copyTo(blob);
         }
@@ -1813,10 +1863,12 @@ Mat getMatFromTensor(const opencv_onnx::TensorProto& tensor_proto)
 
         if (!tensor_proto.int64_data().empty()) {
             ::google::protobuf::RepeatedField< ::google::protobuf::int64> src = tensor_proto.int64_data();
+            checkPayloadSize(src.size());
             convertInt64ToInt32(src, dst, blob.total());
         }
         else
         {
+            checkPayloadSize(tensor_proto.raw_data().size() / sizeof(int64_t));
             const char* val = tensor_proto.raw_data().c_str();
 #if CV_STRONG_ALIGNMENT
             // Aligned pointer is required: https://github.com/opencv/opencv/issues/16373
@@ -1844,10 +1896,12 @@ Mat getMatFromTensor(const opencv_onnx::TensorProto& tensor_proto)
         if (!tensor_proto.int32_data().empty())
         {
             const ::google::protobuf::RepeatedField<int32_t> field = tensor_proto.int32_data();
+            checkPayloadSize(field.size());
             Mat(sizes, CV_32SC1, (void*)field.data()).convertTo(blob, CV_8S, 1.0, offset);
         }
         else
         {
+            checkPayloadSize(tensor_proto.raw_data().size());
             char* val = const_cast<char*>(tensor_proto.raw_data().c_str());
             Mat(sizes, depth, val).convertTo(blob, CV_8S, 1.0, offset);
         }

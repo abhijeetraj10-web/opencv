@@ -45,6 +45,11 @@ else()
   endif()
 
   if(NOT ZLIB_FOUND)
+    if(NOT BUILD_ZLIB)
+      message(WARNING "ZLIB library has not been found, falling back to built-in version. "
+              "Set ZLIB_ROOT or ZLIB_DIR variable so that find_package(ZLIB) would be able to find it. "
+              "See find_package and FindZLIB cmake documentation for details.")
+    endif()
     ocv_clear_vars(ZLIB_LIBRARY ZLIB_LIBRARIES ZLIB_INCLUDE_DIR)
 
     set(ZLIB_LIBRARY zlib CACHE INTERNAL "")
@@ -83,6 +88,12 @@ if(WITH_JPEG)
   endif()
 
   if(NOT JPEG_FOUND)
+    if(NOT BUILD_JPEG)
+      message(WARNING "JPEG library has not been found, falling back to built-in version. "
+              "Add the external installation prefix to CMAKE_PREFIX_PATH, or set JPEG_INCLUDE_DIR "
+              "and JPEG_LIBRARY, so that FindJPEG can locate it. "
+              "See FindJPEG cmake documentation for details.")
+    endif()
     ocv_clear_vars(JPEG_LIBRARY JPEG_INCLUDE_DIR)
 
     if(NOT BUILD_JPEG_TURBO_DISABLE)
@@ -102,8 +113,23 @@ if(WITH_JPEG)
   macro(ocv_detect_jpeg_version header_file)
     if(NOT DEFINED JPEG_LIB_VERSION AND EXISTS "${header_file}")
       ocv_parse_header("${header_file}" JPEG_VERSION_LINES JPEG_LIB_VERSION)
+
+      if(DEFINED JPEG_LIB_VERSION)
+        # Extract libjpeg-turbo version from the header file if JPEG_LIB_VERSION is found.
+        file(STRINGS "${header_file}" JPEG_TURBO_VERSION_LINE REGEX "^#define[\t ]+LIBJPEG_TURBO_VERSION[\t ]")
+
+        if(JPEG_TURBO_VERSION_LINE)
+          # Support both raw values (e.g., 3.1.2) and quoted strings (e.g., "3.1.2").
+          string(REGEX REPLACE "^#define[\t ]+LIBJPEG_TURBO_VERSION[\t ]+\"?([^\"]+)\"?.*" "\\1" JPEG_TURBO_VERSION_STRING "${JPEG_TURBO_VERSION_LINE}")
+          if(JPEG_TURBO_VERSION_STRING)
+            string(STRIP "${JPEG_TURBO_VERSION_STRING}" JPEG_TURBO_VERSION_STRING)
+            set(JPEG_LIB_VERSION "${JPEG_TURBO_VERSION_STRING}-${JPEG_LIB_VERSION}")
+          endif()
+        endif()
+      endif()
     endif()
   endmacro()
+
   ocv_detect_jpeg_version("${JPEG_INCLUDE_DIR}/jpeglib.h")
   if(DEFINED CMAKE_CXX_LIBRARY_ARCHITECTURE)
     ocv_detect_jpeg_version("${JPEG_INCLUDE_DIR}/${CMAKE_CXX_LIBRARY_ARCHITECTURE}/jconfig.h")
@@ -138,6 +164,12 @@ if(WITH_TIFF)
   endif()
 
   if(NOT TIFF_FOUND)
+    if(NOT BUILD_TIFF)
+      message(WARNING "TIFF library has not been found, falling back to built-in version. "
+              "Add the external installation prefix to CMAKE_PREFIX_PATH, or set TIFF_INCLUDE_DIR "
+              "and TIFF_LIBRARY, so that FindTIFF can locate it. "
+              "See FindTIFF cmake documentation for details.")
+    endif()
     ocv_clear_vars(TIFF_LIBRARY TIFF_LIBRARIES TIFF_INCLUDE_DIR)
 
     set(TIFF_LIBRARY libtiff CACHE INTERNAL "")
@@ -186,6 +218,11 @@ endif()
 if(WITH_WEBP AND NOT WEBP_FOUND
     AND (NOT ANDROID OR HAVE_CPUFEATURES)
 )
+  if(NOT BUILD_WEBP)
+    message(WARNING "WebP library has not been found, falling back to built-in version. "
+            "Set WEBP_INCLUDE_DIR and WEBP_LIBRARY, or add the external installation prefix to "
+            "CMAKE_PREFIX_PATH, so that the external WebP can be located.")
+  endif()
   ocv_clear_vars(WEBP_LIBRARY WEBP_INCLUDE_DIR)
   set(WEBP_LIBRARY libwebp CACHE INTERNAL "")
   set(WEBP_LIBRARIES ${WEBP_LIBRARY})
@@ -333,11 +370,16 @@ if(NOT HAVE_SPNG AND WITH_PNG)
   if(BUILD_PNG)
     ocv_clear_vars(PNG_FOUND)
   else()
-    ocv_clear_internal_cache_vars(PNG_LIBRARY PNG_INCLUDE_DIR)
+    ocv_clear_internal_cache_vars(PNG_LIBRARY PNG_INCLUDE_DIR PNG_PNG_INCLUDE_DIR)
     find_package(PNG QUIET)
   endif()
 
   if(NOT PNG_FOUND)
+    if(NOT BUILD_PNG)
+      message(WARNING "PNG library has not been found, falling back to built-in version. "
+              "Set PNG_ROOT or PNG_DIR variable so that find_package(PNG) would be able to find it. "
+              "See find_package and FindPNG cmake documentation for details.")
+    endif()
     ocv_clear_vars(PNG_LIBRARY PNG_LIBRARIES PNG_INCLUDE_DIR PNG_DEFINITIONS)
 
     set(PNG_LIBRARY libpng CACHE INTERNAL "")
@@ -346,6 +388,18 @@ if(NOT HAVE_SPNG AND WITH_PNG)
     set(PNG_INCLUDE_DIR "${${PNG_LIBRARY}_SOURCE_DIR}" CACHE INTERNAL "")
     set(PNG_DEFINITIONS "")
     ocv_parse_header_version(PNG "${PNG_INCLUDE_DIR}/png.h" PNG_LIBPNG_VER_STRING)
+  endif()
+
+  if(BUILD_PNG)
+    # Downstream find_package(PNG) calls from transitive dependencies
+    # (included via include() in the same scope) may overwrite PNG_FOUND
+    # and related variables. PNG_LIBRARY is naturally protected by
+    # FindPNG's "if(NOT PNG_LIBRARY)" guard, but PNG_PNG_INCLUDE_DIR
+    # (searched via find_path without a guard) and its derived variables
+    # (PNG_INCLUDE_DIR, PNG_LIBRARIES, PNG_VERSION_STRING) are not.
+    # Lock PNG_PNG_INCLUDE_DIR so that find_path() respects the cached
+    # bundled path and skips the system search.
+    set(PNG_PNG_INCLUDE_DIR "${PNG_INCLUDE_DIR}" CACHE INTERNAL "PNG include dir (bundled)")
   endif()
 
   set(HAVE_PNG YES)
@@ -385,6 +439,16 @@ if(WITH_GDAL)
     else()
         set(HAVE_GDAL YES)
         ocv_include_directories(${GDAL_INCLUDE_DIR})
+
+        # GDAL_VERSION requires CMake 3.14 or later, if not found, GDAL_RELEASE_NAME is used instead.
+        # See https://cmake.org/cmake/help/latest/module/FindGDAL.html
+        if(NOT GDAL_VERSION)
+            if(EXISTS "${GDAL_INCLUDE_DIR}/gdal_version.h")
+                file(STRINGS "${GDAL_INCLUDE_DIR}/gdal_version.h" gdal_version_str REGEX "^#[\t ]+define[\t ]+GDAL_RELEASE_NAME[\t ]*")
+                string(REGEX REPLACE "^#\[\t ]+define[\t ]+GDAL_RELEASE_NAME[\t ]+\"([^ \\n]*)\"" "\\1" GDAL_VERSION "${gdal_version_str}")
+                unset(gdal_version_str)
+            endif()
+        endif()
     endif()
 endif()
 

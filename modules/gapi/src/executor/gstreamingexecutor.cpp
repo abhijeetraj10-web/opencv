@@ -337,7 +337,7 @@ void rewindToStop(std::vector<Q*> &in_queues,
     });
 
     if (expected_stop_count > 0) {
-        // NB: it requires to substract own queues id from total waiting queue count
+        // NB: it requires to subtract own queues id from total waiting queue count
         // because it had got stop message before rewind was called
         expected_stop_count--;
     }
@@ -1830,7 +1830,6 @@ bool cv::gimpl::GStreamingExecutor::pull(cv::GRunArgsP &&outs)
         default:
             GAPI_Error("Unsupported cmd type in pull");
     }
-    GAPI_Error("Unreachable code");
 }
 
 bool cv::gimpl::GStreamingExecutor::pull(cv::GOptRunArgsP &&outs)

@@ -55,7 +55,7 @@ static void test_readFrames(/*const*/ VideoCapture& capture, const int N = 100, 
             // Check that the time between two camera frames and two system time calls
             // are within 1.5 frame periods of one another.
             //
-            // 1.5x is chosen to accomodate for a dropped frame, and an additional 50%
+            // 1.5x is chosen to accommodate for a dropped frame, and an additional 50%
             // to account for drift in the scale of the camera and system time domains.
             EXPECT_NEAR(sysTimeElapsedSecs, camTimeElapsedSecs, framePeriod * 1.5);
         }
@@ -325,6 +325,20 @@ TEST(DISABLED_videoio_camera, waitAny_V4L)
     {
         EXPECT_GT(frameFromCamera[i], (size_t)0) << i;
     }
+}
+
+TEST(DISABLED_videoio_camera, ffmpeg_index)
+{
+    int idx = (int)utils::getConfigurationParameterSizeT("OPENCV_TEST_FFMPEG_DEVICE_IDX", (size_t)-1);
+    if (idx == -1)
+    {
+        throw SkipTestException("OPENCV_TEST_FFMPEG_DEVICE_IDX is not set");
+    }
+    VideoCapture cap;
+    ASSERT_TRUE(cap.open(idx, CAP_FFMPEG));
+    Mat frame;
+    ASSERT_TRUE(cap.read(frame));
+    ASSERT_FALSE(frame.empty());
 }
 
 }} // namespace

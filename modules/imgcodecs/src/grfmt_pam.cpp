@@ -175,28 +175,28 @@ rgb_convert (void *src, void *target, int width, int target_channels, int target
  */
 
 static void
-basic_conversion (void *src, const struct channel_layout *layout, int src_sampe_size,
+basic_conversion (void *src, const struct channel_layout *layout, int src_sample_size,
     int src_width, void *target, int target_channels, int target_depth, bool use_rgb)
 {
     switch (target_depth) {
         case CV_8U:
         {
             uchar *d = (uchar *)target, *s = (uchar *)src,
-                *end = ((uchar *)src) + src_width;
+                *end = ((uchar *)src) + src_width * src_sample_size;
             switch (target_channels) {
                 case 1:
-                    for( ; s < end; d += 3, s += src_sampe_size )
-                        d[0] = d[1] = d[2] = s[layout->graychan];
+                    for( ; s < end; d += 1, s += src_sample_size )
+                        d[0] = s[layout->graychan];
                     break;
                 case 3:
                     if (use_rgb)
-                        for( ; s < end; d += 3, s += src_sampe_size ) {
+                        for( ; s < end; d += 3, s += src_sample_size ) {
                             d[0] = s[layout->rchan];
                             d[1] = s[layout->gchan];
                             d[2] = s[layout->bchan];
                         }
                     else
-                        for( ; s < end; d += 3, s += src_sampe_size ) {
+                        for( ; s < end; d += 3, s += src_sample_size ) {
                             d[0] = s[layout->bchan];
                             d[1] = s[layout->gchan];
                             d[2] = s[layout->rchan];
@@ -210,21 +210,21 @@ basic_conversion (void *src, const struct channel_layout *layout, int src_sampe_
         case CV_16U:
         {
             ushort *d = (ushort *)target, *s = (ushort *)src,
-                *end = ((ushort *)src) + src_width;
+                *end = ((ushort *)src) + src_width * src_sample_size;
             switch (target_channels) {
                 case 1:
-                    for( ; s < end; d += 3, s += src_sampe_size )
-                        d[0] = d[1] = d[2] = s[layout->graychan];
+                    for( ; s < end; d += 1, s += src_sample_size )
+                        d[0] = s[layout->graychan];
                     break;
                 case 3:
                     if (use_rgb)
-                        for( ; s < end; d += 3, s += src_sampe_size ) {
+                        for( ; s < end; d += 3, s += src_sample_size ) {
                             d[0] = s[layout->rchan];
                             d[1] = s[layout->gchan];
                             d[2] = s[layout->bchan];
                         }
                     else
-                        for( ; s < end; d += 3, s += src_sampe_size ) {
+                        for( ; s < end; d += 3, s += src_sample_size ) {
                             d[0] = s[layout->bchan];
                             d[1] = s[layout->gchan];
                             d[2] = s[layout->rchan];
@@ -481,6 +481,23 @@ bool PAMDecoder::readHeader()
             }
         } while (fieldtype != PAM_HEADER_ENDHDR);
 
+        if (selected_fmt != IMWRITE_PAM_FORMAT_NULL && flds_depth) {
+            if (selected_fmt == IMWRITE_PAM_FORMAT_BLACKANDWHITE && m_channels != 1) {
+                CV_Error(Error::StsError, "fmt is IMWRITE_PAM_FORMAT_BLACKANDWHITE but number of channels is not 1");
+            }
+            if (selected_fmt == IMWRITE_PAM_FORMAT_GRAYSCALE && m_channels != 1) {
+                CV_Error(Error::StsError, "fmt is IMWRITE_PAM_FORMAT_GRAYSCALE but number of channels is not 1");
+            }
+            if (selected_fmt == IMWRITE_PAM_FORMAT_GRAYSCALE_ALPHA && m_channels != 2) {
+                CV_Error(Error::StsError, "fmt is IMWRITE_PAM_FORMAT_GRAYSCALE_ALPHA but number of channels is not 2");
+            }
+            if (selected_fmt == IMWRITE_PAM_FORMAT_RGB && m_channels != 3) {
+                CV_Error(Error::StsError, "fmt is IMWRITE_PAM_FORMAT_RGB but number of channels is not 3");
+            }
+            if (selected_fmt == IMWRITE_PAM_FORMAT_RGB_ALPHA && m_channels != 4) {
+                CV_Error(Error::StsError, "fmt is IMWRITE_PAM_FORMAT_RGB_ALPHA but number of channels is not 4");
+            }
+        }
         if (flds_endhdr && flds_height && flds_width && flds_depth && flds_maxval)
         {
             if (selected_fmt == IMWRITE_PAM_FORMAT_NULL)

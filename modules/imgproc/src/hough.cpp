@@ -13,6 +13,7 @@
 // Copyright (C) 2000, Intel Corporation, all rights reserved.
 // Copyright (C) 2013, OpenCV Foundation, all rights reserved.
 // Copyright (C) 2014, Itseez, Inc, all rights reserved.
+// Copyright (C) 2026, Advanced Micro Devices, Inc., all rights reserved.
 // Third party copyrights are property of their respective owners.
 //
 // Redistribution and use in source and binary forms, with or without modification,
@@ -184,31 +185,82 @@ HoughLinesStandard( InputArray src, OutputArray lines, int type,
                      irho, tabSin, tabCos);
 
     // stage 1. fill accumulator
-    if (use_edgeval) {
-        for( i = 0; i < height; i++ )
-            for( j = 0; j < width; j++ )
-            {
-                if( image[i * step + j] != 0 )
-                    for(int n = 0; n < numangle; n++ )
-                    {
-                        int r = cvRound( j * tabCos[n] + i * tabSin[n] );
-                        r += (numrho - 1) / 2;
-                        accum[(n + 1) * (numrho + 2) + r + 1] += image[i * step + j];
-                     }
-             }
+    // Use the serial implementation for small numangle values to avoid parallel overhead.
+    constexpr int kParallelAngleThreshold = 100;
+    if (numangle < kParallelAngleThreshold) {
+        if (use_edgeval) {
+            for( i = 0; i < height; i++ )
+                for( j = 0; j < width; j++ )
+                {
+                    if( image[i * step + j] != 0 )
+                        for(int n = 0; n < numangle; n++ )
+                        {
+                            int r = cvRound( j * tabCos[n] + i * tabSin[n] );
+                            r += (numrho - 1) / 2;
+                            accum[(n + 1) * (numrho + 2) + r + 1] += image[i * step + j];
+                        }
+                }
+        } else {
+            for( i = 0; i < height; i++ )
+                for( j = 0; j < width; j++ )
+                {
+                    if( image[i * step + j] != 0 )
+                        for(int n = 0; n < numangle; n++ )
+                        {
+                            int r = cvRound( j * tabCos[n] + i * tabSin[n] );
+                            r += (numrho - 1) / 2;
+                            accum[(n + 1) * (numrho + 2) + r + 1]++;
+                        }
+                }
+        }
     } else {
-        for( i = 0; i < height; i++ )
-            for( j = 0; j < width; j++ )
-            {
-                if( image[i * step + j] != 0 )
-                    for(int n = 0; n < numangle; n++ )
-                    {
-                        int r = cvRound( j * tabCos[n] + i * tabSin[n] );
-                        r += (numrho - 1) / 2;
-                        accum[(n + 1) * (numrho + 2) + r + 1]++;
-                    }
+        // Extract the coordinates of all edge points
+        std::vector<int> x_coords, y_coords, edge_vals;
+        size_t estimated_edges = (size_t)width * (size_t)height / 10;
+        x_coords.reserve(estimated_edges);
+        y_coords.reserve(estimated_edges);
+        if (use_edgeval) {
+            edge_vals.reserve(estimated_edges);
+        }
+
+        for (int y = 0; y < height; y++) {
+            const uchar* row_ptr = image + y * step;
+            for (int x = 0; x < width; x++) {
+                int val = row_ptr[x];
+                if (val != 0) {
+                    x_coords.push_back(x);
+                    y_coords.push_back(y);
+                    if (use_edgeval) edge_vals.push_back(val);
+                }
             }
-     }
+        }
+        int num_edges = (int)x_coords.size();
+
+        // Perform multi-threaded segmentation according to the numangle
+        // Since accum is divided into blocks according to angles, the accum areas written by different threads will not overlap
+        auto process_hough_by_angle = [&](const cv::Range& range) {
+            for (int n = range.start; n < range.end; n++) {
+                float cos_n = tabCos[n];
+                float sin_n = tabSin[n];
+
+                int* accum_n = accum + (n + 1) * (numrho + 2) + 1 + (numrho - 1) / 2;
+
+                if (use_edgeval) {
+                    for (int k = 0; k < num_edges; k++) {
+                        int r = cvRound(x_coords[k] * cos_n + y_coords[k] * sin_n);
+                        accum_n[r] += edge_vals[k];
+                    }
+                } else {
+                    for (int k = 0; k < num_edges; k++) {
+                        int r = cvRound(x_coords[k] * cos_n + y_coords[k] * sin_n);
+                        accum_n[r]++;
+                    }
+                }
+            }
+        };
+
+        cv::parallel_for_(cv::Range(0, numangle), process_hough_by_angle);
+    }
 
     // stage 2. find local maximums
     findLocalMaximums( numrho, numangle, threshold, accum, _sort_buf );
@@ -228,7 +280,7 @@ HoughLinesStandard( InputArray src, OutputArray lines, int type,
         int idx = _sort_buf[i];
         int n = cvFloor(idx*scale) - 1;
         int r = idx - (n+1)*(numrho+2) - 1;
-        line.rho = (r - (numrho - 1)*0.5f) * rho;
+        line.rho = (r - (numrho - 1)/2) * rho;
         line.angle = static_cast<float>(min_theta) + n * theta;
         if (type == CV_32FC2)
         {
@@ -308,13 +360,13 @@ HoughLinesSDiv( InputArray image, OutputArray lines, int type,
     lst.push_back(hough_index(threshold, -1.f, 0.f));
 
     // Precalculate sin table
-    std::vector<float> _sinTable( 5 * tn * stn );
+    AutoBuffer<float> _sinTable( 5 * tn * stn );
     float* sinTable = &_sinTable[0];
 
     for( index = 0; index < 5 * tn * stn; index++ )
         sinTable[index] = (float)cos( stheta * index * 0.2f );
 
-    std::vector<uchar> _caccum(rn * tn, (uchar)0);
+    AutoBuffer<uchar> _caccum(rn * tn, (uchar)0);
     uchar* caccum = &_caccum[0];
 
     // Counting all feature pixels
@@ -322,7 +374,7 @@ HoughLinesSDiv( InputArray image, OutputArray lines, int type,
         for( col = 0; col < w; col++ )
             fn += _POINT( row, col ) != 0;
 
-    std::vector<int> _x(fn), _y(fn);
+    AutoBuffer<int> _x(fn), _y(fn);
     int* x = &_x[0], *y = &_y[0];
 
     // Full Hough Transform (it's accumulator update part)
@@ -394,7 +446,7 @@ HoughLinesSDiv( InputArray image, OutputArray lines, int type,
         return;
     }
 
-    std::vector<uchar> _buffer(srn * stn + 2);
+    AutoBuffer<uchar> _buffer(srn * stn + 2);
     uchar* buffer = &_buffer[0];
     uchar* mcaccum = buffer + 1;
 
@@ -535,7 +587,7 @@ HoughLinesProbabilistic( Mat& image,
 
     Mat accum = Mat::zeros( numangle, numrho, CV_32SC1 );
     Mat mask( height, width, CV_8UC1 );
-    std::vector<float> trigtab(numangle*2);
+    AutoBuffer<float> trigtab(numangle*2);
 
     for( int n = 0; n < numangle; n++ )
     {
@@ -1024,7 +1076,7 @@ void HoughLinesPointSet( InputArray _point, OutputArray _lines, int lines_max, i
         int r = idx - (n+1)*(numrho+2) - 1;
         line.rho = static_cast<float>(min_rho) + r * (float)rho_step;
         line.angle = static_cast<float>(min_theta) + n * (float)theta_step;
-        lines.push_back(Vec3d((double)accum[idx], (double)line.rho, (double)line.angle));
+        lines.emplace_back((double)accum[idx], (double)line.rho, (double)line.angle);
     }
 
     Mat(lines).copyTo(_lines);
@@ -1125,7 +1177,7 @@ public:
             {
                 if (ptr[x])
                 {
-                    list.push_back(Point(x, y));
+                    list.emplace_back(x, y);
                 }
             }
         }
@@ -1489,7 +1541,7 @@ protected:
             // Check if the circle has enough support
             if(maxCount > accThreshold)
             {
-                circlesLocal.push_back(EstimatedCircle(Vec3f(curCenter.x, curCenter.y, rBest), maxCount));
+                circlesLocal.emplace_back(Vec3f(curCenter.x, curCenter.y, rBest), maxCount);
             }
         }
 
@@ -1659,8 +1711,7 @@ static void HoughCirclesGradient(InputArray _image, OutputArray _circles,
 
     Mat edges, dx, dy;
 
-    Sobel(_image, dx, CV_16S, 1, 0, kernelSize, 1, 0, BORDER_REPLICATE);
-    Sobel(_image, dy, CV_16S, 0, 1, kernelSize, 1, 0, BORDER_REPLICATE);
+    spatialGradient(_image, dx, dy, kernelSize, BORDER_REPLICATE);
     Canny(dx, dy, edges, std::max(1, cannyThreshold / 2), cannyThreshold, false);
 
     Mutex mtx;
@@ -1847,7 +1898,7 @@ static void HoughCirclesAlt( const Mat& img, std::vector<EstimatedCircle>& circl
                 continue;
 
             mdata[y*mstep + x] = (uchar)1;
-            stack.push_back(Point(x, y));
+            stack.emplace_back(x, y);
             bool backtrace_mode = false;
 
             do
@@ -1858,7 +1909,7 @@ static void HoughCirclesAlt( const Mat& img, std::vector<EstimatedCircle>& circl
                 int vy = dyData[p.y*dxystep + p.x];
 
                 float mag = std::sqrt((float)vx*vx+(float)vy*vy);
-                nz.push_back(Vec4f((float)p.x, (float)p.y, (float)vx, (float)vy));
+                nz.emplace_back((float)p.x, (float)p.y, (float)vx, (float)vy);
                 CV_Assert(mdata[p.y*mstep + p.x] == 1);
 
                 int sx = cvRound(vx * RAY_FP_SCALE / mag);
@@ -1903,7 +1954,7 @@ static void HoughCirclesAlt( const Mat& img, std::vector<EstimatedCircle>& circl
                     if( mdata[y_*mstep + x_] || !edgeData[y_*estep + x_])
                         continue;
                     mdata[y_*mstep + x_] = (uchar)1;
-                    stack.push_back(Point(x_, y_));
+                    stack.emplace_back(x_, y_);
                     neighbors++;
                 }
 
@@ -1919,7 +1970,7 @@ static void HoughCirclesAlt( const Mat& img, std::vector<EstimatedCircle>& circl
             // insert a special "stop marker" in the end of each
             // connected component to make sure we
             // finalize and analyze the arc segment
-            nz.push_back(Vec4f(0.f, 0.f, 0.f, 0.f));
+            nz.emplace_back(0.f, 0.f, 0.f, 0.f);
         }
     }
 
@@ -1951,7 +2002,7 @@ static void HoughCirclesAlt( const Mat& img, std::vector<EstimatedCircle>& circl
             {
                 float cx = (float)((left + x - 1)*dp*0.5f);
                 float cy = (float)(y*dp);
-                centers.push_back(Point2f(cx, cy));
+                centers.emplace_back(cx, cy);
                 left = -1;
             }
         }
@@ -2223,7 +2274,7 @@ static void HoughCirclesAlt( const Mat& img, std::vector<EstimatedCircle>& circl
                 //       (accepted ? '+' : '-'), cx, cy, rk, cjk.weight, count, max_runlen, cjk.mask);
 
                 if( accepted )
-                    local_circles.push_back(EstimatedCircle(Vec3f(cx, cy, (float)rk), cjk.weight));
+                    local_circles.emplace_back(Vec3f(cx, cy, (float)rk), cjk.weight);
             }
         }
     }
@@ -2331,7 +2382,7 @@ static void HoughCircles( InputArray _image, OutputArray _circles,
 
             if( type == CV_32FC4 )
             {
-                std::vector<Vec4f> cw(ncircles);
+                AutoBuffer<Vec4f> cw(ncircles);
                 for( i = 0; i < ncircles; i++ )
                     cw[i] = GetCircle4f(circles[i]);
                 if (ncircles > 0)
@@ -2339,7 +2390,7 @@ static void HoughCircles( InputArray _image, OutputArray _circles,
             }
             else if( type == CV_32FC3 )
             {
-                std::vector<Vec3f> cwow(ncircles);
+                AutoBuffer<Vec3f> cwow(ncircles);
                 for( i = 0; i < ncircles; i++ )
                     cwow[i] = GetCircle(circles[i]);
                 if (ncircles > 0)

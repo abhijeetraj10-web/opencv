@@ -244,7 +244,8 @@ CV_IMPL void cvShowImage( const char* name, const CvArr* arr)
                         int y = [window y0];
                         if(x >= 0 && y >= 0)
                         {
-                            y = [[window screen] visibleFrame].size.height - y;
+                            NSRect visibleFrame = [[window screen] visibleFrame];
+                            y = NSMaxY(visibleFrame) - y;
                             [window setFrameTopLeftPoint:NSMakePoint(x, y)];
                         }
                     }
@@ -285,7 +286,8 @@ CV_IMPL void cvMoveWindow( const char* name, int x, int y)
                 [window setY0:y];
             }
             else {
-                y = [[window screen] visibleFrame].size.height - y;
+                NSRect visibleFrame = [[window screen] visibleFrame];
+                y = NSMaxY(visibleFrame) - y;
                 [window setFrameTopLeftPoint:NSMakePoint(x, y)];
             }
         }

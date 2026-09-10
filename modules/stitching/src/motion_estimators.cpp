@@ -41,9 +41,7 @@
 //M*/
 
 #include "precomp.hpp"
-#include "opencv2/core/core_c.h"
-#include "opencv2/calib3d/calib3d_c.h"
-#include "opencv2/core/cvdef.h"
+#include "opencv2/calib3d/private.hpp"
 
 using namespace cv;
 using namespace cv::detail;
@@ -254,46 +252,40 @@ bool BundleAdjusterBase::estimate(const std::vector<ImageFeatures> &features,
         total_num_matches_ += static_cast<int>(pairwise_matches[edges_[i].first * num_images_ +
                                                                 edges_[i].second].num_inliers);
 
-    CvLevMarq solver(num_images_ * num_params_per_cam_,
-                     total_num_matches_ * num_errs_per_measurement_,
-                     cvTermCriteria(term_criteria_));
+    LevMarq solver(num_images_ * num_params_per_cam_,
+                   total_num_matches_ * num_errs_per_measurement_, term_criteria_);
 
     Mat err, jac;
-    CvMat matParams = cvMat(cam_params_);
-    cvCopy(&matParams, solver.param);
+    cam_params_.copyTo(solver.param);
 
 #if ENABLE_LOG
     int iter = 0;
 #endif
     for(;;)
     {
-        const CvMat* _param = 0;
-        CvMat* _jac = 0;
-        CvMat* _err = 0;
+        Mat1d _param, _jac, _err;
 
         bool proceed = solver.update(_param, _jac, _err);
 
-        cvCopy(_param, &matParams);
+        _param.copyTo(cam_params_);
 
-        if (!proceed || !_err)
+        if (!proceed || _err.empty())
             break;
 
-        if (_jac)
+        if (!_jac.empty())
         {
             calcJacobian(jac);
-            CvMat tmp = cvMat(jac);
-            cvCopy(&tmp, _jac);
+            jac.copyTo(_jac);
         }
 
-        if (_err)
+        if (!_err.empty())
         {
             calcError(err);
             LOG_CHAT(".");
 #if ENABLE_LOG
             iter++;
 #endif
-            CvMat tmp = cvMat(err);
-            cvCopy(&tmp, _err);
+            err.copyTo(_err);
         }
     }
 

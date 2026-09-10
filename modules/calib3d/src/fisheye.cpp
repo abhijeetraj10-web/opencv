@@ -53,8 +53,6 @@ namespace cv { namespace
         Vec3d dom, dT;
         double dalpha;
     };
-
-    void subMatrix(const Mat& src, Mat& dst, const std::vector<uchar>& cols, const std::vector<uchar>& rows);
 }}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -429,8 +427,15 @@ void cv::fisheye::undistortPoints( InputArray distorted, OutputArray undistorted
     for(size_t i = 0; i < n; i++ )
     {
         Vec2d pi = sdepth == CV_32F ? (Vec2d)srcf[i] : srcd[i];  // image point
+        // u = fx * x' + cx (alpha = 0), v = fy * y' + cy =>
+        // x' = (u - cx) / fx, y' = (v - cy) / fy
         Vec2d pw((pi[0] - c[0])/f[0], (pi[1] - c[1])/f[1]);      // world point
 
+        // x' = (theta_d / r) * a, y' = (theta_d / r) * b =>
+        // x'^2 + y'^2 = theta_d^2 * (a^2 + b^2) / r^2 =>
+        // (r^2 = a^2 + b^2)
+        // x'^2 + y'^2 = theta_d^2 =>
+        // theta_d = sqrt(x'^2 + y'^2)
         double theta_d = sqrt(pw[0]*pw[0] + pw[1]*pw[1]);
 
         // the current camera model is only valid up to 180 FOV
@@ -449,9 +454,14 @@ void cv::fisheye::undistortPoints( InputArray distorted, OutputArray undistorted
 
             for (int j = 0; j < maxCount; j++)
             {
+                // theta_d = theta * (1 + k1 * theta^2 + k2 * theta^4 + k3 * theta^6 + k4 * theta^8) =>
+                // f(theta) := theta * (1 + k1 * theta^2 + k2 * theta^4 + k3 * theta^6 + k4 * theta^8) - theta_d = 0
+                // Newton's method: new_theta = theta - theta_fix, theta_fix := f(theta) / f'(theta)
+                // f'(theta) = (theta * (1 + k1 * theta^2 + k2 * theta^4 + k3 * theta^6 + k4 * theta^8) - theta_d)' =
+                // (theta + k1 * theta^3 + k2 * theta^5 + k3 * theta^7 + k4 * theta^9 - theta_d)' =
+                // 1 + 3 * k1 * theta^2 + 5 * k2 * theta^4 + 7 * k3 * theta^6 + 9 * k4 * theta^8
                 double theta2 = theta*theta, theta4 = theta2*theta2, theta6 = theta4*theta2, theta8 = theta6*theta2;
                 double k0_theta2 = k[0] * theta2, k1_theta4 = k[1] * theta4, k2_theta6 = k[2] * theta6, k3_theta8 = k[3] * theta8;
-                /* new_theta = theta - theta_fix, theta_fix = f0(theta) / f0'(theta) */
                 double theta_fix = (theta * (1 + k0_theta2 + k1_theta4 + k2_theta6 + k3_theta8) - theta_d) /
                                    (1 + 3*k0_theta2 + 5*k1_theta4 + 7*k2_theta6 + 9*k3_theta8);
                 theta = theta - theta_fix;
@@ -463,6 +473,10 @@ void cv::fisheye::undistortPoints( InputArray distorted, OutputArray undistorted
                 }
             }
 
+            // x' = (theta_d / r) * a, y' = (theta_d / r) * b =>
+            // a = x' * r / theta_d, b = y' * r / theta_d =>
+            // (theta = atan(r) => r = tan(theta), scale := r / theta_d = tan(theta) / theta_d)
+            // a = x' * scale, b = y' * scale
             scale = std::tan(theta) / theta_d;
         }
         else
@@ -477,6 +491,7 @@ void cv::fisheye::undistortPoints( InputArray distorted, OutputArray undistorted
 
         if ((converged || !isEps) && !theta_flipped)
         {
+            // a = x' * scale, b = y' * scale
             Vec2d pu = pw * scale; //undistorted point
             Vec2d fi;
 
@@ -1041,7 +1056,7 @@ double cv::fisheye::stereoCalibrate(InputArrayOfArrays objectPoints, InputArrayO
         cv::Vec6d oldTom(Tcur[0], Tcur[1], Tcur[2], omcur[0], omcur[1], omcur[2]);
 
         //update all parameters
-        cv::subMatrix(J, J, selectedParams, std::vector<uchar>(J.rows, 1));
+        cv::subMatrixWithMasks(J, J, selectedParams, std::vector<uchar>(J.rows, 1), /*resize_dst=*/true);
         int a = cv::countNonZero(intrinsicLeft.isEstimate);
         int b = cv::countNonZero(intrinsicRight.isEstimate);
         cv::Mat deltas;
@@ -1144,12 +1159,12 @@ bool cv::fisheye::solvePnPRansac( InputArray opoints, InputArray ipoints,
                               useExtrinsicGuess, iterationsCount, reprojectionError, confidence, inliers, flags);
 }
 
-namespace cv{ namespace {
-void subMatrix(const Mat& src, Mat& dst, const std::vector<uchar>& cols, const std::vector<uchar>& rows)
+namespace cv{
+void subMatrixWithMasks(const Mat& src, Mat& dst, const std::vector<uchar>& cols, const std::vector<uchar>& rows, bool resize_dst)
 {
     CV_Assert(src.channels() == 1);
 
-    int nonzeros_cols = cv::countNonZero(cols);
+    int nonzeros_cols = resize_dst ? cv::countNonZero(cols) : dst.cols;
     Mat tmp(src.rows, nonzeros_cols, CV_64F);
 
     for (int i = 0, j = 0; i < (int)cols.size(); i++)
@@ -1160,8 +1175,10 @@ void subMatrix(const Mat& src, Mat& dst, const std::vector<uchar>& cols, const s
         }
     }
 
-    int nonzeros_rows  = cv::countNonZero(rows);
-    dst.create(nonzeros_rows, nonzeros_cols, CV_64F);
+    if (resize_dst) {
+        int nonzeros_rows  = cv::countNonZero(rows);
+        dst.create(nonzeros_rows, nonzeros_cols, CV_64F);
+    }
     for (int i = 0, j = 0; i < (int)rows.size(); i++)
     {
         if (rows[i])
@@ -1171,7 +1188,7 @@ void subMatrix(const Mat& src, Mat& dst, const std::vector<uchar>& cols, const s
     }
 }
 
-}}
+}
 
 cv::internal::IntrinsicParams::IntrinsicParams():
     f(Vec2d::all(0)), c(Vec2d::all(0)), k(Vec4d::all(0)), alpha(0), isEstimate(9,0)
@@ -1547,8 +1564,8 @@ void cv::internal::ComputeJacobians(InputArrayOfArrays objectPoints, InputArrayO
     std::vector<uchar> idxs(param.isEstimate);
     idxs.insert(idxs.end(), 6 * n, 1);
 
-    subMatrix(JJ2, JJ2, idxs, idxs);
-    subMatrix(ex3, ex3, std::vector<uchar>(1, 1), idxs);
+    subMatrixWithMasks(JJ2, JJ2, idxs, idxs, /*resize_dst=*/true);
+    subMatrixWithMasks(ex3, ex3, std::vector<uchar>(1, 1), idxs, /*resize_dst=*/true);
 }
 
 void cv::internal::EstimateUncertainties(InputArrayOfArrays objectPoints, InputArrayOfArrays imagePoints,

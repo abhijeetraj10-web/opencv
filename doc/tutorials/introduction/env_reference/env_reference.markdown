@@ -114,7 +114,7 @@ Links:
 | OPENCV_THREAD_POOL_ACTIVE_WAIT_WORKER | num | 2000 | tune pthreads parallel_for backend |
 | OPENCV_THREAD_POOL_ACTIVE_WAIT_MAIN | num | 10000 | tune pthreads parallel_for backend |
 | OPENCV_THREAD_POOL_ACTIVE_WAIT_THREADS_LIMIT | num | 0 | tune pthreads parallel_for backend |
-| OPENCV_FOR_OPENMP_DYNAMIC_DISABLE | bool | false | use single OpenMP thread |
+| OPENCV_FOR_OPENMP_DYNAMIC_DISABLE | bool | false | Removed in 4.13.0. Use standard [OMP_DYNAMIC](https://www.openmp.org/spec-html/5.0/openmpsu116.html) instead |
 
 
 ## backends
@@ -273,6 +273,7 @@ Some external dependencies can be detached into a dynamic library, which will be
 | OPENCV_FFMPEG_THREADS | num | | set FFmpeg thread count |
 | OPENCV_FFMPEG_DEBUG | bool | false | enable logging messages from FFmpeg |
 | OPENCV_FFMPEG_LOGLEVEL | num | | set FFmpeg logging level |
+| OPENCV_FFMPEG_SKIP_LOG_CALLBACK | bool | false | do not install OpenCV's FFmpeg log callback (preserve default/user callback) |
 | OPENCV_FFMPEG_DLL_DIR | dir path | | directory with FFmpeg plugin (legacy) |
 | OPENCV_FFMPEG_IS_THREAD_SAFE | bool | false | enabling this option will turn off thread safety locks in the FFmpeg backend (use only if you are sure FFmpeg is built with threading support, tested on Linux) |
 | OPENCV_FFMPEG_READ_ATTEMPTS | num | 4096 | number of failed `av_read_frame` attempts before failing read procedure |
@@ -351,3 +352,7 @@ Some external dependencies can be detached into a dynamic library, which will be
 | OPENCV_IO_MAX_IMAGE_PIXELS | num | 1 << 30 | |
 | OPENCV_IO_ENABLE_OPENEXR | bool | true (set build option OPENCV_IO_FORCE_OPENEXR or use external OpenEXR), false (otherwise) | enable OpenEXR backend |
 | OPENCV_IO_ENABLE_JASPER | bool | true (set build option OPENCV_IO_FORCE_JASPER), false (otherwise) | enable Jasper backend |
+
+### Note
+* OpenEXR support in OpenCV is optional. Source builds may include a bundled 3rdparty OpenEXR 2.3.0, but runtime support must be explicitly enabled via `OPENCV_IO_ENABLE_OPENEXR`. Users can also build OpenCV against a system-installed OpenEXR library.
+* Support is disabled by default due to historical security considerations with malformed EXR files in older OpenEXR versions. Upgrading to OpenEXR 3.x is not a drop-in change and requires API and ABI adaptations.

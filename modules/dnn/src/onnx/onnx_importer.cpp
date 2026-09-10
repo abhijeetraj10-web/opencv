@@ -24,6 +24,7 @@
 
 #include <array>
 #include <iostream>
+#include <set>
 #include <fstream>
 #include <string>
 #include <limits>
@@ -119,6 +120,8 @@ protected:
     std::map<std::string, Mat> constBlobs;
     std::map<std::string, TensorInfo> constBlobsExtraInfo;
 
+    std::set<std::string> dynamicQuantScaleZpOutputs;  // Byte-encoded scale/zp tensors produced by DynamicQuantizeLinear.
+
     std::map<std::string, MatShape> outShapes;  // List of internal blobs shapes.
     bool hasDynamicShapes;  // Whether the model has inputs with dynamic shapes
     typedef std::map<std::string, MatShape>::iterator IterShape_t;
@@ -191,6 +194,7 @@ private:
     void parseElementWise          (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseDepthSpaceOps        (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseRange                (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseRandomNormalLike     (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseScatter              (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseTile                 (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseLayerNorm            (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
@@ -201,6 +205,7 @@ private:
     // Domain: com.microsoft
     // URL: https://github.com/microsoft/onnxruntime/blob/master/docs/ContribOperators.md
     void parseQuantDequant         (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
+    void parseDynamicQuantizeLinear (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseQConv                (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseQMatMul              (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
     void parseQEltwise             (LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto);
@@ -726,6 +731,7 @@ static bool ifInt8Output(const String& layerType)
     // ai.onnx opset 15
     static std::vector<String> input8output8List = {
             "QuantizeLinear",
+            "DynamicQuantizeLinear",
             "QLinearAdd",
             "QLinearMul",
             "QLinearAveragePool",
@@ -1298,7 +1304,7 @@ void ONNXImporter::parseSlice(LayerParams& layerParams, const opencv_onnx::NodeP
     {
         // dims should be added to the negative axes
         cur_axe = axes_.getIntValue(i) < 0 ? axes_.getIntValue(i) + dims : axes_.getIntValue(i);
-        CV_CheckGE(cur_axe, 0, "Axes should be grater or equal to '-dims'.");
+        CV_CheckGE(cur_axe, 0, "Axes should be greater or equal to '-dims'.");
         CV_CheckLT(cur_axe, dims, "Axes should be less than 'dim'.");
         CV_CheckEQ(flag[cur_axe], false, "Axes shouldn't have duplicated values.");
         flag[cur_axe] = true;
@@ -2014,6 +2020,25 @@ void ONNXImporter::parseConv(LayerParams& layerParams, const opencv_onnx::NodePr
             layerParams.blobs.push_back(getBlob(node_proto, j));
         }
     }
+    // ONNX allows omitting 'kernel_shape' attribute for Conv. In that case, it should be inferred from weights.
+    // See: https://onnx.ai/onnx/operators/onnx__Conv.html
+    if (!layerParams.has("kernel_size"))
+    {
+        Mat weights;
+        if (!layerParams.blobs.empty())
+            weights = layerParams.blobs[0];
+        else if (constBlobs.find(node_proto.input(1)) != constBlobs.end())
+            weights = getBlob(node_proto, 1);
+
+        if (!weights.empty() && weights.dims >= 3)
+        {
+            const int kDims = weights.dims - 2;
+            std::vector<int32_t> kernel(kDims);
+            for (int i = 0; i < kDims; ++i)
+                kernel[i] = weights.size[2 + i];
+            layerParams.set("kernel_size", DictValue::arrayInt(kernel.data(), static_cast<int>(kernel.size())));
+        }
+    }
     int outCn = layerParams.blobs.empty() ? outShapes[node_proto.input(1)][0] : layerParams.blobs[0].size[0];
     layerParams.set("num_output", outCn);
 
@@ -2029,6 +2054,20 @@ void ONNXImporter::parseConvTranspose(LayerParams& layerParams, const opencv_onn
     }
     layerParams.set("num_output", layerParams.blobs[0].size[1] * layerParams.get<int>("group", 1));
     layerParams.set("bias_term", node_proto.input_size() == 3);
+
+    // ONNX allows omitting 'kernel_shape' attribute for ConvTranspose. Infer it from weights if needed.
+    if (!layerParams.has("kernel_size"))
+    {
+        const Mat& weights = layerParams.blobs[0];
+        if (!weights.empty() && weights.dims >= 3)
+        {
+            const int kDims = weights.dims - 2;
+            std::vector<int32_t> kernel(kDims);
+            for (int i = 0; i < kDims; ++i)
+                kernel[i] = weights.size[2 + i];
+            layerParams.set("kernel_size", DictValue::arrayInt(kernel.data(), static_cast<int>(kernel.size())));
+        }
+    }
 
     if (!layerParams.has("kernel_size"))
         CV_Error(Error::StsNotImplemented,
@@ -2129,6 +2168,14 @@ void ONNXImporter::parseSqueeze(LayerParams& layerParams, const opencv_onnx::Nod
         else
             CV_Error(Error::StsNotImplemented, cv::format("ONNX/Squeeze: doesn't support non-constant 'axes' input"));
     }
+    else
+    {
+        for (int i = 0; i < inpShape.size(); ++i)
+        {
+            if (inpShape[i] == 1)
+                maskedAxes[i] = true;
+        }
+    }
 
     MatShape outShape;
     for (int i = 0; i < inpShape.size(); ++i)
@@ -2183,7 +2230,9 @@ void ONNXImporter::parseFlatten(LayerParams& layerParams, const opencv_onnx::Nod
         {
             constBlobsExtraInfo.insert(std::make_pair(node_proto.output(0), getBlobExtraInfo(node_proto, 0)));
         }
-        int axis = normalize_axis(axis_, input.dims);
+        int axis = axis_;
+        if (axis < 0) axis += input.dims;
+        axis = std::max(0, std::min(axis, input.dims));
 
         int out_size[2] = {1, 1};
         for (int i = 0; i < axis; ++i)
@@ -2202,18 +2251,46 @@ void ONNXImporter::parseFlatten(LayerParams& layerParams, const opencv_onnx::Nod
     IterShape_t shapeIt = outShapes.find(node_proto.input(0));
     CV_Assert(shapeIt != outShapes.end());
     MatShape inpShape = shapeIt->second;
-    int axis = normalize_axis(axis_, inpShape.size());
+    int axis = axis_;
+    if (axis < 0) axis += (int)inpShape.size();
+    axis = std::max(0, std::min(axis, (int)inpShape.size()));
 
-    if (axis == 0 || axis == inpShape.size())
+    if (axis == (int)inpShape.size())
     {
         LayerParams reshapeLp;
         reshapeLp.name = layerParams.name + "/reshape";
         reshapeLp.type = "Reshape";
         CV_Assert(layer_id.find(reshapeLp.name) == layer_id.end());
-
-        inpShape.insert(axis == 0 ? inpShape.begin() : inpShape.end(), 1);
+        inpShape.push_back(1);
         reshapeLp.set("dim", DictValue::arrayInt(&inpShape[0], inpShape.size()));
+        opencv_onnx::NodeProto proto;
+        proto.add_input(node_proto.input(0));
+        proto.add_output(reshapeLp.name);
+        addLayer(reshapeLp, proto);
+        LayerParams flatLp;
+        flatLp.name = layerParams.name + "/flatten";
+        flatLp.type = "Flatten";
+        CV_Assert(layer_id.find(flatLp.name) == layer_id.end());
+        flatLp.set("axis", 0);
+        flatLp.set("end_axis", (int)inpShape.size() - 2);
+        opencv_onnx::NodeProto proto2;
+        proto2.add_input(reshapeLp.name);
+        proto2.add_output(flatLp.name);
+        addLayer(flatLp, proto2);
+        layerParams.type = "Identity";
+        node_proto.set_input(0, flatLp.name);
+        addLayer(layerParams, node_proto);
+        return;
+    }
 
+    if (axis == 0)
+    {
+        LayerParams reshapeLp;
+        reshapeLp.name = layerParams.name + "/reshape";
+        reshapeLp.type = "Reshape";
+        CV_Assert(layer_id.find(reshapeLp.name) == layer_id.end());
+        inpShape.insert(inpShape.begin(), 1);
+        reshapeLp.set("dim", DictValue::arrayInt(&inpShape[0], inpShape.size()));
         opencv_onnx::NodeProto proto;
         proto.add_input(node_proto.input(0));
         proto.add_output(reshapeLp.name);
@@ -2952,6 +3029,14 @@ void ONNXImporter::parseRange(LayerParams& layerParams, const opencv_onnx::NodeP
     constBlobsExtraInfo.insert(std::make_pair(node_proto.output(0), TensorInfo(1)));
 }
 
+void ONNXImporter::parseRandomNormalLike(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    CV_CheckEQ(node_proto.input_size(), 1, "RandomNormalLike: one input is required");
+
+    layerParams.type = "RandomNormalLike";
+    addLayer(layerParams, node_proto);
+}
+
 void ONNXImporter::parseScatter(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
 {
     CV_CheckEQ(node_proto.input_size(), 3, "Scatter: three inputs are required.");
@@ -3052,13 +3137,14 @@ void ONNXImporter::parseTile(LayerParams& layerParams, const opencv_onnx::NodePr
         // input2 in tile-1: axis, 1d tensor of shape [1]
         Mat input2_blob = getBlob(node_proto, 2);
         CV_CheckEQ(input2_blob.total(), 1ull, "ONNX/Tile: axis must be a 0D tensor or 1D tensor of shape [1].");
-        int axis = input2_blob.at<int>(0);
+        int axis = normalize_axis(input2_blob.at<int>(0), input0_dims);
         repeats_vec[axis] = tiles;
     }
     else
     {
         // input1 in tile>1: repeats
         CV_CheckEQ(input1_blob.dims, 2, "ONNX/Tile: repeats must be a 1D tensor."); // 1D tensor is represented as a 2D Mat
+        CV_CheckEQ((int)input1_blob.total(), input0_dims, "ONNX/Tile: repeats length must match the input rank.");
         for (int i = 0; i < input1_blob.total(); i++)
             repeats_vec[i] = input1_blob.at<int>(i);
     }
@@ -3264,6 +3350,11 @@ void ONNXImporter::parseQuantDequant(LayerParams& layerParams, const opencv_onnx
 
     // If scale is not defined as a constant blob, it is considered an external input.
     if(constBlobs.find(node_proto.input(1)) == constBlobs.end()){
+        // Scale produced by DynamicQuantizeLinear is byte-encoded (1x4 CV_8S); route to
+        // DequantizeDynamic which knows how to decode it.
+        if (layerParams.type == "Dequantize" &&
+            dynamicQuantScaleZpOutputs.count(node_proto.input(1)))
+            layerParams.type = "DequantizeDynamic";
         addLayer(layerParams, node_proto);
         return;
     }
@@ -3319,6 +3410,21 @@ void ONNXImporter::parseQuantDequant(LayerParams& layerParams, const opencv_onnx
     }
     else
         addLayer(layerParams, node_proto);
+}
+
+void ONNXImporter::parseDynamicQuantizeLinear(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto)
+{
+    // DynamicQuantizeLinear (opset 11): 1 input (FP32 data), 3 outputs (UINT8/INT8 data, scale, zeropoint)
+    CV_Assert(node_proto.input_size() == 1);
+    layerParams.type = "QuantizeDynamic";
+    layerParams.set("depth", CV_8S);
+    // Outputs 1 (y_scale) and 2 (y_zero_point) use a byte-encoded convention (see
+    // quantization_utils.cpp); record their names so consumers can be routed properly.
+    if (node_proto.output_size() > 1 && !node_proto.output(1).empty())
+        dynamicQuantScaleZpOutputs.insert(node_proto.output(1));
+    if (node_proto.output_size() > 2 && !node_proto.output(2).empty())
+        dynamicQuantScaleZpOutputs.insert(node_proto.output(2));
+    addLayer(layerParams, node_proto);
 }
 
 void ONNXImporter::parseQConv(LayerParams& layerParams, const opencv_onnx::NodeProto& node_proto_)
@@ -3958,6 +4064,7 @@ void ONNXImporter::buildDispatchMap_ONNX_AI(int opset_version)
     dispatch["Sum"] = dispatch["Min"] = dispatch["Max"] = dispatch["Mean"] = &ONNXImporter::parseElementWise;
     dispatch["Where"] = &ONNXImporter::parseElementWise;
     dispatch["Range"] = &ONNXImporter::parseRange;
+    dispatch["RandomNormalLike"] = &ONNXImporter::parseRandomNormalLike;
     dispatch["Einsum"] = &ONNXImporter::parseEinsum;
 
     std::vector<std::string> simpleLayers{"Acos", "Acosh", "Asin", "Asinh", "Atan", "Atanh", "Ceil", "Celu", "Cos",
@@ -3972,6 +4079,7 @@ void ONNXImporter::buildDispatchMap_ONNX_AI(int opset_version)
 
     // ai.onnx: opset 10+
     dispatch["QuantizeLinear"] = dispatch["DequantizeLinear"] = &ONNXImporter::parseQuantDequant;
+    dispatch["DynamicQuantizeLinear"] = &ONNXImporter::parseDynamicQuantizeLinear;
     dispatch["QLinearConv"] = &ONNXImporter::parseQConv;
     dispatch["QLinearMatMul"] = &ONNXImporter::parseQMatMul;
 

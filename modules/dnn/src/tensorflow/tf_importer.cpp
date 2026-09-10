@@ -27,6 +27,7 @@ Implementation of Tensorflow models parser
 #include <algorithm>
 #include <string>
 #include <queue>
+#include <type_traits>
 #include "tf_graph_simplifier.hpp"
 #endif
 
@@ -1650,6 +1651,7 @@ void TFImporter::parseSlice(tensorflow::GraphDef& net, const tensorflow::NodeDef
     CV_Assert_N(!begins.empty(), !sizes.empty());
     CV_CheckTypeEQ(begins.type(), CV_32SC1, "");
     CV_CheckTypeEQ(sizes.type(), CV_32SC1, "");
+    CV_CheckEQ(begins.total(), sizes.total(), "Slice: 'begin' and 'size' must have equal length");
 
     if (begins.total() == 4 && getDataLayout(name, data_layouts) == DNN_LAYOUT_NHWC)
     {
@@ -3290,6 +3292,19 @@ Net readNetFromTensorflow(const std::vector<uchar>& bufferModel, const std::vect
                                  bufferConfigPtr, bufferConfig.size());
 }
 
+
+template<class GRAPH_DEF>
+typename std::enable_if<std::is_base_of<Message, GRAPH_DEF>::value, void>::type
+PrintToStringImpl(const GRAPH_DEF& net, std::string* content) {
+  google::protobuf::TextFormat::PrintToString(net, content);
+}
+
+template<class GRAPH_DEF>
+typename std::enable_if<!std::is_base_of<Message, GRAPH_DEF>::value, void>::type
+PrintToStringImpl(const GRAPH_DEF& net, std::string* content) {
+  CV_Error(Error::StsError, "DNN/TF: do not have your message be a MessageLite");
+}
+
 void writeTextGraph(const String& _model, const String& output)
 {
     String model = _model;
@@ -3312,7 +3327,7 @@ void writeTextGraph(const String& _model, const String& output)
     }
 
     std::string content;
-    google::protobuf::TextFormat::PrintToString(net, &content);
+    PrintToStringImpl(net, &content);
 
     std::ofstream ofs(output.c_str());
     ofs << content;

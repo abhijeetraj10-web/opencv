@@ -283,8 +283,8 @@ public:
     }
 #endif
 
-    virtual bool tryQuantize(const std::vector<std::vector<float> > &scales,
-                             const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
+    bool tryQuantize(const std::vector<std::vector<float> > &scales,
+                     const std::vector<std::vector<int> > &zeropoints, LayerParams& params) CV_OVERRIDE
     {
         return func.tryQuantize(scales, zeropoints, params);
     }
@@ -989,6 +989,32 @@ struct GeluApproximationFunctor : public BaseDefaultFunctor<GeluApproximationFun
                                            GeluApproximationConstants::coef_sqrt_2_pi * x * x)));
     }
 
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 one = vx_setall_f32(1.f), two = vx_setall_f32(2.f), half = vx_setall_f32(0.5f);
+            v_float32 c1 = vx_setall_f32(GeluApproximationConstants::sqrt_2_pi);
+            v_float32 c2 = vx_setall_f32(GeluApproximationConstants::coef_sqrt_2_pi);
+            v_float32 lo = vx_setall_f32(-88.f), hi = vx_setall_f32(88.f);
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                v_float32 u = v_mul(x, v_fma(v_mul(x, x), c2, c1));
+                v_float32 e = v_exp(v_min(v_max(v_add(u, u), lo), hi));
+                v_float32 th = v_sub(one, v_div(two, v_add(e, one)));
+                vx_store(dstptr + i, v_mul(v_mul(half, x), v_add(one, th)));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
+    }
+
     int64 getFLOPSPerElement() const { return 100; }
 };
 
@@ -1014,6 +1040,28 @@ struct TanHFunctor : public BaseDefaultFunctor<TanHFunctor>
     inline float calculate(float x) const
     {
         return tanh(x);
+    }
+
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 one = vx_setall_f32(1.f), two = vx_setall_f32(2.f);
+            v_float32 lo = vx_setall_f32(-88.f), hi = vx_setall_f32(88.f);
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                v_float32 e = v_exp(v_min(v_max(v_add(x, x), lo), hi));   // e^{2x}, clamped
+                vx_store(dstptr + i, v_sub(one, v_div(two, v_add(e, one)))); // 1 - 2/(e+1)
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
     }
 
 #ifdef HAVE_CUDA
@@ -1287,6 +1335,16 @@ struct SigmoidFunctor : public BaseDefaultFunctor<SigmoidFunctor>
 {
     typedef SigmoidLayer Layer;
 
+    int vlanes;
+
+    explicit SigmoidFunctor() {
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+        vlanes = VTraits<v_float32>::vlanes();
+#else
+        vlanes = 1;
+#endif
+    }
+
     bool supportBackend(int backendId, int)
     {
 #ifdef HAVE_INF_ENGINE
@@ -1309,6 +1367,45 @@ struct SigmoidFunctor : public BaseDefaultFunctor<SigmoidFunctor>
             y = y / (1 + y);
         }
         return y;
+    }
+
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize) {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            // Using identity: 1 / (1 + exp(-x)) === 1 - (1 / (1 + exp(x)))
+            // Clamping x to [-80.f, 88.f] prevents both v_exp overflow (inf) and subnormal underflow.
+            v_float32 one = vx_setall_f32(1.0f);
+            v_float32 min_val = vx_setall_f32(-80.0f), max_val = vx_setall_f32(88.0f);
+            int step2 = vlanes * 2;
+
+            // 2-way unrolled loop optimized for minimal register dependency
+            for (; i <= len - step2; i += step2) {
+                v_float32 x0 = vx_load(srcptr + i);
+                v_float32 x1 = vx_load(srcptr + i + vlanes);
+
+                x0 = v_min(v_max(x0, min_val), max_val);
+                x1 = v_min(v_max(x1, min_val), max_val);
+
+                // y = 1.0f - (1.0f / (1.0f + exp(x)))
+                v_float32 dst0 = v_sub(one, v_div(one, v_add(one, v_exp(x0))));
+                v_float32 dst1 = v_sub(one, v_div(one, v_add(one, v_exp(x1))));
+
+                vx_store(dstptr + i, dst0);
+                vx_store(dstptr + i + vlanes, dst1);
+            }
+
+            for (; i <= len - vlanes; i += vlanes) {
+                v_float32 x = vx_load(srcptr + i);
+                x = v_min(v_max(x, min_val), max_val);
+                vx_store(dstptr + i, v_sub(one, v_div(one, v_add(one, v_exp(x)))));
+            }
+#endif
+            for (; i < len; i++) {
+                dstptr[i] = calculate(srcptr[i]);
+            }
+        }
     }
 
 #ifdef HAVE_CUDA
@@ -1558,6 +1655,27 @@ struct BNLLFunctor : public BaseDefaultFunctor<BNLLFunctor>
         return x > 0 ? x + log(1.f + exp(-x)) : log(1.f + exp(x));
     }
 
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 one = vx_setall_f32(1.f), z = vx_setzero_f32();
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                // stable single-branch form: max(x,0) + log(1 + exp(-|x|))
+                vx_store(dstptr + i, v_add(v_max(x, z), v_log(v_add(one, v_exp(v_sub(z, v_abs(x)))))));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
+    }
+
 #ifdef HAVE_CUDA
     Ptr<BackendNode> initCUDA(int target, csl::Stream stream)
     {
@@ -1728,6 +1846,22 @@ struct LogFunctor : public BaseDefaultFunctor<LogFunctor>
     inline float calculate(float x) const
     {
         return log(x);
+    }
+
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            for (; i <= len - vlanes; i += vlanes)
+                vx_store(dstptr + i, v_log(vx_load(srcptr + i)));
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
     }
 
 #ifdef HAVE_CUDA
@@ -1933,6 +2067,26 @@ struct AcoshFunctor : public BaseDefaultFunctor<AcoshFunctor>
         return acosh(x);
     }
 
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 one = vx_setall_f32(1.f);
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                vx_store(dstptr + i, v_log(v_add(x, v_sqrt(v_sub(v_mul(x, x), one)))));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
+    }
+
 #ifdef HAVE_CUDA
     Ptr<BackendNode> initCUDA(int target, csl::Stream stream)
     {
@@ -1985,6 +2139,28 @@ struct AsinhFunctor : public BaseDefaultFunctor<AsinhFunctor>
     inline float calculate(float x) const
     {
         return asinh(x);
+    }
+
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 one = vx_setall_f32(1.f), z = vx_setzero_f32();
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                v_float32 ax = v_abs(x);
+                v_float32 r = v_log(v_add(ax, v_sqrt(v_fma(ax, ax, one))));
+                vx_store(dstptr + i, v_select(v_lt(x, z), v_sub(z, r), r));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
     }
 
 #ifdef HAVE_CUDA
@@ -2041,6 +2217,26 @@ struct AtanhFunctor : public BaseDefaultFunctor<AtanhFunctor>
         return atanh(x);
     }
 
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 one = vx_setall_f32(1.f), half = vx_setall_f32(0.5f);
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                vx_store(dstptr + i, v_mul(half, v_log(v_div(v_add(one, x), v_sub(one, x)))));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
+    }
+
 #ifdef HAVE_CUDA
     Ptr<BackendNode> initCUDA(int target, csl::Stream stream)
     {
@@ -2066,6 +2262,25 @@ struct CosFunctor : public BaseDefaultFunctor<CosFunctor>
     inline float calculate(float x) const
     {
         return cos(x);
+    }
+
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                vx_store(dstptr + i, v_cos(x));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
     }
 
 #ifdef HAVE_CUDA
@@ -2095,6 +2310,26 @@ struct CoshFunctor : public BaseDefaultFunctor<CoshFunctor>
         return cosh(x);
     }
 
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 half = vx_setall_f32(0.5f), z = vx_setzero_f32();
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                vx_store(dstptr + i, v_mul(half, v_add(v_exp(x), v_exp(v_sub(z, x)))));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
+    }
+
 #ifdef HAVE_CUDA
     Ptr<BackendNode> initCUDA(int target, csl::Stream stream)
     {
@@ -2120,6 +2355,22 @@ struct ErfFunctor : public BaseDefaultFunctor<ErfFunctor>
     inline float calculate(float x) const
     {
         return erf(x);
+    }
+
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            for (; i <= len - vlanes; i += vlanes)
+                vx_store(dstptr + i, v_erf(vx_load(srcptr + i)));
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
     }
 
 #ifdef HAVE_CUDA
@@ -2233,6 +2484,25 @@ struct SinFunctor : public BaseDefaultFunctor<SinFunctor>
         return sin(x);
     }
 
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                vx_store(dstptr + i, v_sin(x));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
+    }
+
 #ifdef HAVE_CUDA
         Ptr<BackendNode> initCUDA(int target, csl::Stream stream)
         {
@@ -2260,6 +2530,26 @@ struct SinhFunctor : public BaseDefaultFunctor<SinhFunctor>
         return sinh(x);
     }
 
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 half = vx_setall_f32(0.5f), z = vx_setzero_f32();
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                vx_store(dstptr + i, v_mul(half, v_sub(v_exp(x), v_exp(v_sub(z, x)))));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
+    }
+
 #ifdef HAVE_CUDA
     Ptr<BackendNode> initCUDA(int target, csl::Stream stream)
     {
@@ -2285,6 +2575,26 @@ struct SoftplusFunctor : public BaseDefaultFunctor<SoftplusFunctor>
     inline float calculate(float x) const
     {
         return log1p(exp(x));
+    }
+
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 one = vx_setall_f32(1.f);
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                vx_store(dstptr + i, v_log(v_add(one, v_exp(x))));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
     }
 
 #ifdef HAVE_CUDA
@@ -2339,6 +2649,25 @@ struct TanFunctor : public BaseDefaultFunctor<TanFunctor>
     inline float calculate(float x) const
     {
         return tan(x);
+    }
+
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                vx_store(dstptr + i, v_div(v_sin(x), v_cos(x)));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
     }
 
 #ifdef HAVE_CUDA
@@ -2619,7 +2948,7 @@ struct PowerFunctor : public BaseFunctor
                 for( int i = 0; i < len; i++ )
                 {
                     float x = srcptr[i];
-                    dstptr[i] = pow(a*x + b, p);
+                    dstptr[i] = std::pow(a*x + b, p);
                 }
             }
         }
@@ -2674,7 +3003,7 @@ struct PowerFunctor : public BaseFunctor
         }
         if (power != 1.0f)
         {
-            topExpr = pow(topExpr, power);
+            topExpr = std::pow(topExpr, power);
         }
         top(x, y, c, n) = topExpr;
     }
@@ -2776,6 +3105,26 @@ struct ExpFunctor : public BaseDefaultFunctor<ExpFunctor>
     inline float calculate(float x) const
     {
         return exp(normScale * x + normShift);
+    }
+
+    void apply(const float* srcptr, float* dstptr, int stripeStart, int len, size_t planeSize, int cn0, int cn1) const
+    {
+        CV_UNUSED(stripeStart);
+        for (int cn = cn0; cn < cn1; cn++, srcptr += planeSize, dstptr += planeSize)
+        {
+            int i = 0;
+#if (CV_SIMD || CV_SIMD_SCALABLE)
+            const int vlanes = VTraits<v_float32>::vlanes();
+            v_float32 vsc = vx_setall_f32(normScale), vsh = vx_setall_f32(normShift);
+            for (; i <= len - vlanes; i += vlanes)
+            {
+                v_float32 x = vx_load(srcptr + i);
+                vx_store(dstptr + i, v_exp(v_fma(x, vsc, vsh)));
+            }
+#endif
+            for (; i < len; i++)
+                dstptr[i] = calculate(srcptr[i]);
+        }
     }
 
     inline void setKernelParams(ocl::Kernel& kernel) const

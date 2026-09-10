@@ -62,25 +62,8 @@ static void findCircle3pts(Point2f *pts, Point2f &center, float &radius)
     float det = v1.x * v2.y - v1.y * v2.x;
     if (fabs(det) <= EPS)
     {
-        // v1 and v2 are colinear, so the longest distance between any 2 points
-        // is the diameter of the minimum enclosing circle.
-        float d1 = normL2Sqr<float>(pts[0] - pts[1]);
-        float d2 = normL2Sqr<float>(pts[0] - pts[2]);
-        float d3 = normL2Sqr<float>(pts[1] - pts[2]);
-        radius = sqrt(std::max(d1, std::max(d2, d3))) * 0.5f + EPS;
-        if (d1 >= d2 && d1 >= d3)
-        {
-            center = (pts[0] + pts[1]) * 0.5f;
-        }
-        else if (d2 >= d1 && d2 >= d3)
-        {
-            center = (pts[0] + pts[2]) * 0.5f;
-        }
-        else
-        {
-            CV_DbgAssert(d3 >= d1 && d3 >= d2);
-            center = (pts[1] + pts[2]) * 0.5f;
-        }
+        // triangle is degenerate, so this is 2-points case
+        // 2-points case should be taken into account in previous step
         return;
     }
     float cx = (c1 * v2.y - c2 * v1.y) / det;
@@ -115,13 +98,7 @@ static void findThirdPoint(const PT *pts, int i, int j, Point2f &center, float &
             ptsf[0] = (Point2f)pts[i];
             ptsf[1] = (Point2f)pts[j];
             ptsf[2] = (Point2f)pts[k];
-            Point2f new_center; float new_radius = 0;
-            findCircle3pts(ptsf, new_center, new_radius);
-            if (new_radius > 0)
-            {
-                radius = new_radius;
-                center = new_center;
-            }
+            findCircle3pts(ptsf, center, radius);
         }
     }
 }
@@ -146,21 +123,38 @@ void findSecondPoint(const PT *pts, int i, Point2f &center, float &radius)
         }
         else
         {
-            Point2f new_center; float new_radius = 0;
-            findThirdPoint(pts, i, j, new_center, new_radius);
-            if (new_radius > 0)
-            {
-                radius = new_radius;
-                center = new_center;
-            }
+            findThirdPoint(pts, i, j, center, radius);
         }
     }
 }
 
 
 template<typename PT>
-static void findMinEnclosingCircle(const PT *pts, int count, Point2f &center, float &radius)
+static void findMinEnclosingCircle(const PT *pts_in, int count, Point2f &center, float &radius)
 {
+    // Welzl's algorithm requires random permutation for expected O(n) time.
+    // Without shuffling, sorted inputs trigger O(n^3) worst case.
+    cv::AutoBuffer<PT, 1024> pts_buf(count);
+    std::copy(pts_in, pts_in + count, pts_buf.data());
+    PT* pts = pts_buf.data();
+    if (count > 10)
+    {
+        Cv32suf x0, y0, xn, yn;
+        x0.f = (float)pts[0].x;
+        y0.f = (float)pts[0].y;
+        xn.f = (float)pts[count-1].x;
+        yn.f = (float)pts[count-1].y;
+
+        uint32_t seed = (uint32_t)count ^ x0.u ^ (y0.u << 8) ^ (xn.u << 16) ^ (yn.u << 24);
+        cv::RNG rng(seed);
+
+        for (int i = 1; i < count; ++i)
+        {
+            int j = rng.uniform(0, i + 1);
+            std::swap(pts[i], pts[j]);
+        }
+    }
+
     center.x = (float)(pts[0].x + pts[1].x) / 2.0f;
     center.y = (float)(pts[0].y + pts[1].y) / 2.0f;
     float dx = (float)(pts[0].x - pts[1].x);
@@ -178,13 +172,7 @@ static void findMinEnclosingCircle(const PT *pts, int count, Point2f &center, fl
         }
         else
         {
-            Point2f new_center; float new_radius = 0;
-            findSecondPoint(pts, i, new_center, new_radius);
-            if (new_radius > 0)
-            {
-                radius = new_radius;
-                center = new_center;
-            }
+            findSecondPoint(pts, i, center, radius);
         }
     }
 }
@@ -210,61 +198,42 @@ void cv::minEnclosingCircle( InputArray _points, Point2f& _center, float& _radiu
     const Point* ptsi = points.ptr<Point>();
     const Point2f* ptsf = points.ptr<Point2f>();
 
-    switch (count)
+    if( count == 1 )
     {
-        case 1:
-        {
-            _center = (is_float) ? ptsf[0] : Point2f((float)ptsi[0].x, (float)ptsi[0].y);
-            _radius = EPS;
-            break;
-        }
-        case 2:
-        {
-            Point2f p1 = (is_float) ? ptsf[0] : Point2f((float)ptsi[0].x, (float)ptsi[0].y);
-            Point2f p2 = (is_float) ? ptsf[1] : Point2f((float)ptsi[1].x, (float)ptsi[1].y);
-            _center.x = (p1.x + p2.x) / 2.0f;
-            _center.y = (p1.y + p2.y) / 2.0f;
-            _radius = (float)(norm(p1 - p2) / 2.0) + EPS;
-            break;
-        }
-        default:
-        {
-            Point2f center;
-            float radius = 0.f;
-            if (is_float)
+        _center = (is_float) ? ptsf[0] : Point2f((float)ptsi[0].x, (float)ptsi[0].y);
+        _radius = EPS;
+        return;
+    }
+
+    if (is_float)
+    {
+        findMinEnclosingCircle<Point2f>(ptsf, count, _center, _radius);
+        #if 0
+            for (int m = 0; m < count; ++m)
             {
-                findMinEnclosingCircle<Point2f>(ptsf, count, center, radius);
-                #if 0
-                    for (size_t m = 0; m < count; ++m)
-                    {
-                        float d = (float)norm(ptsf[m] - center);
-                        if (d > radius)
-                        {
-                            printf("error!\n");
-                        }
-                    }
-                #endif
+                float d = (float)norm(ptsf[m] - _center);
+                if (d > _radius)
+                {
+                    printf("error!\n");
+                }
             }
-            else
+        #endif
+    }
+    else
+    {
+        findMinEnclosingCircle<Point>(ptsi, count, _center, _radius);
+        #if 0
+            for (int m = 0; m < count; ++m)
             {
-                findMinEnclosingCircle<Point>(ptsi, count, center, radius);
-                #if 0
-                    for (size_t m = 0; m < count; ++m)
-                    {
-                        double dx = ptsi[m].x - center.x;
-                        double dy = ptsi[m].y - center.y;
-                        double d = std::sqrt(dx * dx + dy * dy);
-                        if (d > radius)
-                        {
-                            printf("error!\n");
-                        }
-                    }
-                #endif
+                double dx = ptsi[m].x - _center.x;
+                double dy = ptsi[m].y - _center.y;
+                double d = std::sqrt(dx * dx + dy * dy);
+                if (d > _radius)
+                {
+                    printf("error!\n");
+                }
             }
-            _center = center;
-            _radius = radius;
-            break;
-        }
+        #endif
     }
 }
 
@@ -610,7 +579,9 @@ cv::RotatedRect cv::fitEllipseAMS( InputArray _points )
         M(4,3)=DM(3,4);
         M(4,4)=DM(4,4);
 
-        if (fabs(cv::determinant(M)) > 1.0e-10) {
+        double npow = (double)n * (double)n;
+        npow = npow * npow * (double)n;  // n^5
+        if (fabs(cv::determinant(M)) > 1.0e-10 / npow) {
             break;
         }
 
@@ -734,6 +705,8 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
     Matx<double, 3, 1> pVec;
 
     double x0, y0, a, b, theta, Ts;
+    Mat eVal, eVec;
+    double cond[3];
     double s = 0;
 
     for( i = 0; i < n; i++ )
@@ -794,6 +767,11 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
         Ts=(-(DM(3,5)*DM(4,4)*DM(5,3)) + DM(3,4)*DM(4,5)*DM(5,3) + DM(3,5)*DM(4,3)*DM(5,4) - \
               DM(3,3)*DM(4,5)*DM(5,4)  - DM(3,4)*DM(4,3)*DM(5,5) + DM(3,3)*DM(4,4)*DM(5,5));
 
+        if (fabs(Ts) < DBL_EPSILON) {
+            eps = (float)(s/(n*2)*1e-2);
+            continue;
+        }
+
         M(0,0) = (DM(2,0) + (DM(2,3)*TM(0,0) + DM(2,4)*TM(1,0) + DM(2,5)*TM(2,0))/Ts)/2.;
         M(0,1) = (DM(2,1) + (DM(2,3)*TM(0,1) + DM(2,4)*TM(1,1) + DM(2,5)*TM(2,1))/Ts)/2.;
         M(0,2) = (DM(2,2) + (DM(2,3)*TM(0,2) + DM(2,4)*TM(1,2) + DM(2,5)*TM(2,2))/Ts)/2.;
@@ -804,18 +782,9 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
         M(2,1) = (DM(0,1) + (DM(0,3)*TM(0,1) + DM(0,4)*TM(1,1) + DM(0,5)*TM(2,1))/Ts)/2.;
         M(2,2) = (DM(0,2) + (DM(0,3)*TM(0,2) + DM(0,4)*TM(1,2) + DM(0,5)*TM(2,2))/Ts)/2.;
 
-        double det = fabs(cv::determinant(M));
-        if (fabs(det) > 1.0e-10)
-            break;
-        eps = (float)(s/(n*2)*1e-2);
-    }
-
-    if( iter < 2 ) {
-        Mat eVal, eVec;
         eigenNonSymmetric(M, eVal, eVec);
 
         // Select the eigen vector {a,b,c} which satisfies 4ac-b^2 > 0
-        double cond[3];
         cond[0]=(4.0 * eVec.at<double>(0,0) * eVec.at<double>(0,2) - eVec.at<double>(0,1) * eVec.at<double>(0,1));
         cond[1]=(4.0 * eVec.at<double>(1,0) * eVec.at<double>(1,2) - eVec.at<double>(1,1) * eVec.at<double>(1,1));
         cond[2]=(4.0 * eVec.at<double>(2,0) * eVec.at<double>(2,2) - eVec.at<double>(2,1) * eVec.at<double>(2,1));
@@ -824,6 +793,18 @@ cv::RotatedRect cv::fitEllipseDirect( InputArray _points )
         } else {
             i = (cond[0]<cond[2]) ? 2 : 0;
         }
+        // Check that the ellipse condition 4ac-b^2 is meaningfully positive
+        // (not just positive due to floating-point noise from complex eigenvalues)
+        {
+            double v0 = eVec.at<double>(i,0), v1 = eVec.at<double>(i,1), v2 = eVec.at<double>(i,2);
+            double vnorm2 = v0*v0 + v1*v1 + v2*v2;
+            if (cond[i] > 1e-6 * vnorm2)
+                break;
+        }
+        eps = (float)(s/(n*2)*1e-2);
+    }
+
+    if( iter < 2 ) {
         double norm = std::sqrt(eVec.at<double>(i,0)*eVec.at<double>(i,0) + eVec.at<double>(i,1)*eVec.at<double>(i,1) + eVec.at<double>(i,2)*eVec.at<double>(i,2));
         if (((eVec.at<double>(i,0)<0.0  ? -1 : 1) * (eVec.at<double>(i,1)<0.0  ? -1 : 1) * (eVec.at<double>(i,2)<0.0  ? -1 : 1)) <= 0.0) {
                 norm=-1.0*norm;

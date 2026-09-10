@@ -48,7 +48,7 @@ The references are:
 namespace cv
 {
 
-#if (defined __i386__ || defined(_M_IX86) || defined __x86_64__ || defined(_M_X64))
+#if (defined __i386__ || defined(_M_IX86) || defined __x86_64__ || defined(_M_X64) || defined(_M_ARM64) || defined(__aarch64__) || defined(__arm__))
 
 static void AGAST_5_8(InputArray _img, std::vector<KeyPoint>& keypoints, int threshold)
 {
@@ -7444,7 +7444,7 @@ static void OAST_9_16(InputArray _img, std::vector<KeyPoint>& keypoints, int thr
 
 
 
-#else // !(defined __i386__ || defined(_M_IX86) || defined __x86_64__ || defined(_M_X64))
+#else // !(defined __i386__ || defined(_M_IX86) || defined __x86_64__ || defined(_M_X64) || defined(_M_ARM64) || defined(__aarch64__) || defined(__arm__))
 
 static void AGAST_ALL(InputArray _img, std::vector<KeyPoint>& keypoints, int threshold, AgastFeatureDetector::DetectorType agasttype)
 {
@@ -7932,7 +7932,7 @@ static void OAST_9_16(InputArray _img, std::vector<KeyPoint>& keypoints, int thr
     AGAST_ALL(_img, keypoints, threshold, AgastFeatureDetector::OAST_9_16);
 }
 
-#endif // !(defined __i386__ || defined(_M_IX86) || defined __x86_64__ || defined(_M_X64))
+#endif // !(defined __i386__ || defined(_M_IX86) || defined __x86_64__ || defined(_M_X64) || defined(_M_ARM64) || defined(__aarch64__) || defined(__arm__))
 
 void AGAST(InputArray _img, std::vector<KeyPoint>& keypoints, int threshold, bool nonmax_suppression)
 {
@@ -8052,6 +8052,9 @@ void AGAST(InputArray _img, std::vector<KeyPoint>& keypoints, int threshold, boo
       case AgastFeatureDetector::OAST_9_16:
         OAST_9_16(_img, kpts, threshold);
         break;
+      default:
+        CV_Error_(Error::StsBadArg,
+                  ("Unknown AgastFeatureDetector detector type: %d", static_cast<int>(type)));
     }
 
     cv::Mat img = _img.getMat();

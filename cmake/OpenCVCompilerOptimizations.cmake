@@ -49,7 +49,7 @@
 
 set(CPU_ALL_OPTIMIZATIONS "SSE;SSE2;SSE3;SSSE3;SSE4_1;SSE4_2;POPCNT;AVX;FP16;AVX2;FMA3;AVX_512F")
 list(APPEND CPU_ALL_OPTIMIZATIONS "AVX512_COMMON;AVX512_KNL;AVX512_KNM;AVX512_SKX;AVX512_CNL;AVX512_CLX;AVX512_ICL")
-list(APPEND CPU_ALL_OPTIMIZATIONS NEON VFPV3 FP16 NEON_DOTPROD NEON_FP16 NEON_BF16)
+list(APPEND CPU_ALL_OPTIMIZATIONS SVE NEON VFPV3 FP16 NEON_DOTPROD NEON_FP16 NEON_BF16)
 list(APPEND CPU_ALL_OPTIMIZATIONS MSA)
 list(APPEND CPU_ALL_OPTIMIZATIONS VSX VSX3)
 list(APPEND CPU_ALL_OPTIMIZATIONS RVV)
@@ -104,6 +104,7 @@ ocv_optimization_process_obsolete_option(ENABLE_AVX2 AVX2 ON)
 ocv_optimization_process_obsolete_option(ENABLE_FMA3 FMA3 ON)
 
 ocv_optimization_process_obsolete_option(ENABLE_VFPV3 VFPV3 OFF)
+ocv_optimization_process_obsolete_option(ENABLE_SVE SVE ON)
 ocv_optimization_process_obsolete_option(ENABLE_NEON NEON ON)
 
 ocv_optimization_process_obsolete_option(ENABLE_VSX VSX ON)
@@ -352,7 +353,7 @@ if(X86 OR X86_64)
   endif()
 
 elseif(ARM OR AARCH64)
-
+  ocv_update(CPU_SVE_TEST_FILE "${OpenCV_SOURCE_DIR}/cmake/checks/cpu_sve.cpp")
   ocv_update(CPU_NEON_TEST_FILE "${OpenCV_SOURCE_DIR}/cmake/checks/cpu_neon.cpp")
   ocv_update(CPU_FP16_TEST_FILE "${OpenCV_SOURCE_DIR}/cmake/checks/cpu_fp16.cpp")
   ocv_update(CPU_NEON_FP16_TEST_FILE "${OpenCV_SOURCE_DIR}/cmake/checks/cpu_neon_fp16.cpp")
@@ -369,16 +370,24 @@ elseif(ARM OR AARCH64)
     endif()
     ocv_update(CPU_FP16_IMPLIES "NEON")
   else()
-    ocv_update(CPU_KNOWN_OPTIMIZATIONS "NEON;FP16;NEON_DOTPROD;NEON_FP16;NEON_BF16")
+    if (UNIX AND NOT APPLE)
+      #Current Apple silicone M4 does not support SVE,
+      #but some Xcode versions reports their support.
+      ocv_update(CPU_KNOWN_OPTIMIZATIONS "SVE;NEON;FP16;NEON_DOTPROD;NEON_FP16;NEON_BF16")
+    else()
+      ocv_update(CPU_KNOWN_OPTIMIZATIONS "NEON;FP16;NEON_DOTPROD;NEON_FP16;NEON_BF16")
+    endif()
     ocv_update(CPU_FP16_IMPLIES "NEON")
     ocv_update(CPU_NEON_DOTPROD_IMPLIES "NEON")
     ocv_update(CPU_NEON_FP16_IMPLIES "NEON")
     ocv_update(CPU_NEON_BF16_IMPLIES "NEON")
     if(MSVC)
+      ocv_update(CPU_SVE_FLAGS_ON "")
       ocv_update(CPU_NEON_DOTPROD_FLAGS_ON "")
       ocv_update(CPU_NEON_FP16_FLAGS_ON "")
       ocv_update(CPU_NEON_BF16_FLAGS_ON "")
     else()
+      ocv_update(CPU_SVE_FLAGS_ON "-march=armv8.2-a+sve")
       ocv_update(CPU_NEON_DOTPROD_FLAGS_ON "-march=armv8.2-a+dotprod")
       ocv_update(CPU_NEON_FP16_FLAGS_ON "-march=armv8.2-a+fp16")
       ocv_update(CPU_NEON_BF16_FLAGS_ON "-march=armv8.2-a+bf16")
@@ -863,20 +872,24 @@ macro(ocv_compiler_optimization_fill_cpu_config)
 #  define CV_CPU_HAS_SUPPORT_${OPT} 1
 #  define CV_CPU_CALL_${OPT}(fn, args) return (cpu_baseline::fn args)
 #  define CV_CPU_CALL_${OPT}_(fn, args) return (opt_${OPT}::fn args)
+#  define CV_CPU_GET_FN_PTR_${OPT}(fn) return (cpu_baseline::fn)
 #elif !defined CV_DISABLE_OPTIMIZATION && defined CV_ENABLE_INTRINSICS && defined CV_CPU_DISPATCH_COMPILE_${OPT}
 #  define CV_TRY_${OPT} 1
 #  define CV_CPU_FORCE_${OPT} 0
 #  define CV_CPU_HAS_SUPPORT_${OPT} (cv::checkHardwareSupport(CV_CPU_${OPT}))
 #  define CV_CPU_CALL_${OPT}(fn, args) if (CV_CPU_HAS_SUPPORT_${OPT}) return (opt_${OPT}::fn args)
 #  define CV_CPU_CALL_${OPT}_(fn, args) if (CV_CPU_HAS_SUPPORT_${OPT}) return (opt_${OPT}::fn args)
+#  define CV_CPU_GET_FN_PTR_${OPT}(fn) if (CV_CPU_HAS_SUPPORT_${OPT}) return (opt_${OPT}::fn)
 #else
 #  define CV_TRY_${OPT} 0
 #  define CV_CPU_FORCE_${OPT} 0
 #  define CV_CPU_HAS_SUPPORT_${OPT} 0
 #  define CV_CPU_CALL_${OPT}(fn, args)
 #  define CV_CPU_CALL_${OPT}_(fn, args)
+#  define CV_CPU_GET_FN_PTR_${OPT}(fn)
 #endif
 #define __CV_CPU_DISPATCH_CHAIN_${OPT}(fn, args, mode, ...)  CV_CPU_CALL_${OPT}(fn, args); __CV_EXPAND(__CV_CPU_DISPATCH_CHAIN_ ## mode(fn, args, __VA_ARGS__))
+#define __CV_CPU_DISPATCH_CHAIN_FN_${OPT}(fn, mode, ...)  CV_CPU_GET_FN_PTR_${OPT}(fn); __CV_EXPAND(__CV_CPU_DISPATCH_CHAIN_FN_ ## mode(fn, __VA_ARGS__))
 ")
     endif()
   endforeach()
@@ -884,6 +897,8 @@ macro(ocv_compiler_optimization_fill_cpu_config)
   set(OPENCV_CPU_CONTROL_DEFINITIONS_CONFIGMAKE "${OPENCV_CPU_CONTROL_DEFINITIONS_CONFIGMAKE}
 #define CV_CPU_CALL_BASELINE(fn, args) return (cpu_baseline::fn args)
 #define __CV_CPU_DISPATCH_CHAIN_BASELINE(fn, args, mode, ...)  CV_CPU_CALL_BASELINE(fn, args) /* last in sequence */
+#define CV_CPU_GET_FN_PTR_BASELINE(fn) return (cpu_baseline::fn)
+#define __CV_CPU_DISPATCH_CHAIN_FN_BASELINE(fn, mode, ...)  CV_CPU_GET_FN_PTR_BASELINE(fn) /* last in sequence */
 ")
 
 

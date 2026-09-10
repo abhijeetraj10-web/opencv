@@ -18,6 +18,7 @@ endforeach(m)
 
 # header blacklist
 ocv_list_filterout(opencv_hdrs "modules/.*.h$")
+ocv_list_filterout(opencv_hdrs "modules/calib3d/include/opencv2/calib3d/private.hpp")
 ocv_list_filterout(opencv_hdrs "modules/core/include/opencv2/core/fast_math.hpp")
 ocv_list_filterout(opencv_hdrs "modules/core/.*/cuda")
 ocv_list_filterout(opencv_hdrs "modules/core/.*/opencl")
@@ -50,7 +51,7 @@ if(DEFINED ENV{OPENCV_JS_WHITELIST})
 else()
   #generate white list from modules/<module_name>/misc/js/whitelist.json
   set(OPENCV_JS_WHITELIST_FILE "${CMAKE_CURRENT_BINARY_DIR}/whitelist.json")
-  foreach(m in ${OPENCV_JS_MODULES})
+  foreach(m IN LISTS OPENCV_JS_MODULES)
     set(js_whitelist "${OPENCV_MODULE_${m}_LOCATION}/misc/js/gen_dict.json")
     if (EXISTS "${js_whitelist}")
       file(READ "${js_whitelist}" whitelist_content)

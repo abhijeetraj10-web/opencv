@@ -45,17 +45,17 @@ set(EMSCRIPTEN_VERSION_PATH "${EMSCRIPTEN_INCLUDE_DIR}/emscripten/version.h")
 if(NOT EXISTS "${EMSCRIPTEN_VERSION_PATH}")
   message(STATUS "${EMSCRIPTEN_INCLUDE_DIR}/emscripten/version.h is missing")
 else()
-  file(STRINGS "${EMSCRIPTEN_VERSION_PATH}" EMSCRIPTEN_VERSION_CONTENTS REGEX "^#define[ \t]+__EMSCRIPTEN_[a-z]+__[ \t][0-9]+")
+  file(STRINGS "${EMSCRIPTEN_VERSION_PATH}" EMSCRIPTEN_VERSION_CONTENTS REGEX "^#define[ \t]+__EMSCRIPTEN_[a-zA-Z]+__[ \t][0-9]+")
   if(NOT EMSCRIPTEN_VERSION_CONTENTS)
     message(STATUS "${EMSCRIPTEN_INCLUDE_DIR}/emscripten/version.h is exists, but is not readable")
   else()
-    if(EMSCRIPTEN_VERSION_CONTENTS MATCHES "__EMSCRIPTEN_major__[ \t]+([0-9]+)")
+    if(EMSCRIPTEN_VERSION_CONTENTS MATCHES "__EMSCRIPTEN_[mM][aA][jJ][oO][rR]__[ \t]+([0-9]+)")
       set(EMSCRIPTEN_VERSION_MAJOR "${CMAKE_MATCH_1}")
     endif()
-    if(EMSCRIPTEN_VERSION_CONTENTS MATCHES "__EMSCRIPTEN_minor__[ \t]+([0-9]+)")
+    if(EMSCRIPTEN_VERSION_CONTENTS MATCHES "__EMSCRIPTEN_[mM][iI][nN][oO][rR]__[ \t]+([0-9]+)")
       set(EMSCRIPTEN_VERSION_MINOR "${CMAKE_MATCH_1}")
     endif()
-    if(EMSCRIPTEN_VERSION_CONTENTS MATCHES "__EMSCRIPTEN_tiny__[ \t]+([0-9]+)")
+    if(EMSCRIPTEN_VERSION_CONTENTS MATCHES "__EMSCRIPTEN_[tT][iI][nN][yY]__[ \t]+([0-9]+)")
       set(EMSCRIPTEN_VERSION_TINY "${CMAKE_MATCH_1}")
     endif()
 
@@ -74,12 +74,22 @@ else()
   endif()
 endif()
 
+# Embind requires C++17 or newer from Emscripten 4.0.20.
+# See https://github.com/emscripten-core/emscripten/blob/main/ChangeLog.md#4020---111825
+if(EMSCRIPTEN_VERSION VERSION_GREATER_EQUAL "4.0.20")
+  if(NOT CMAKE_CXX_STANDARD OR CMAKE_CXX_STANDARD STREQUAL "98"
+     OR CMAKE_CXX_STANDARD STREQUAL "11" OR CMAKE_CXX_STANDARD STREQUAL "14")
+
+    message(FATAL_ERROR "[OpenCV.js Build Error] "
+      "Emscripten ${EMSCRIPTEN_VERSION} requires C++17 or newer for Embind, "
+      "but CMAKE_CXX_STANDARD is set to '${CMAKE_CXX_STANDARD}'.\n"
+      "Please re-run emcmake with --cmake_option=\"-DCMAKE_CXX_STANDARD=17\"\n")
+  endif()
+endif()
 
 ocv_add_module(js BINDINGS PRIVATE_REQUIRED opencv_js_bindings_generator)
 
 ocv_module_include_directories(${EMSCRIPTEN_INCLUDE_DIR})
-
-add_definitions("-std=c++11")
 
 set(deps ${OPENCV_MODULE_${the_module}_DEPS})
 list(REMOVE_ITEM deps opencv_js_bindings_generator)  # don't add dummy module

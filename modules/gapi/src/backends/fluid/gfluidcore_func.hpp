@@ -315,8 +315,42 @@ CONVERTTO_SCALED_SIMD(float, float)
 
 #undef CONVERTTO_SCALED_SIMD
 
+//-------------------------
+//
+// Fluid kernels: InRange
+//
+//-------------------------
+
+#define INRANGE_SIMD(SRC)                                                    \
+int inrange_simd(const SRC in[], const SRC lower[], const SRC upper[],       \
+                 uchar out[], const int length, const int chan);
+
+INRANGE_SIMD(uchar)
+INRANGE_SIMD(ushort)
+INRANGE_SIMD(short)
+
+#undef INRANGE_SIMD
+
+//-----------------------------------
+//
+// Fluid kernels: Select
+//
+//-----------------------------------
+#define SELECT_SIMD(SRC)                                                            \
+int select_simd(const SRC in1[], const SRC in2[], const uchar in3[],                \
+                SRC out[], const int length, const int chan);
+
+SELECT_SIMD(uchar)
+SELECT_SIMD(ushort)
+SELECT_SIMD(short)
+
+#undef SELECT_SIMD
+
 }  // namespace fluid
 }  // namespace gapi
 }  // namespace cv
+
+
+
 
 #endif // !defined(GAPI_STANDALONE)

@@ -1245,6 +1245,26 @@ _Tp Point_<_Tp>::dot(const Point_& pt) const
     return saturate_cast<_Tp>(x*pt.x + y*pt.y);
 }
 
+template<> inline
+int Point_<int>::dot(const Point_<int>& pt) const
+{
+    const int64_t xx = (int64_t)x * pt.x;
+    const int64_t yy = (int64_t)y * pt.y;
+
+    // detect int64 overflow before adding
+    if (yy > 0 && xx > INT64_MAX - yy)
+    {
+        return INT32_MAX;
+    }
+    if (yy < 0 && xx < INT64_MIN - yy)
+    {
+        return INT32_MIN;
+    }
+
+    const int64_t v = xx + yy;
+    return cv::saturate_cast<int>(v);
+}
+
 template<typename _Tp> inline
 double Point_<_Tp>::ddot(const Point_& pt) const
 {
@@ -1488,6 +1508,50 @@ template<typename _Tp> inline
 _Tp Point3_<_Tp>::dot(const Point3_& pt) const
 {
     return saturate_cast<_Tp>(x*pt.x + y*pt.y + z*pt.z);
+}
+
+template<> inline
+int Point3_<int>::dot(const Point3_<int>& pt) const
+{
+    const int64_t xx = (int64_t)x * pt.x;
+    const int64_t yy = (int64_t)y * pt.y;
+    const int64_t zz = (int64_t)z * pt.z;
+
+    // Sort the three products so that lo <= mid <= hi.
+    // We add in the order (lo + hi) first, then add mid.
+    // This minimizes the absolute value of the intermediate sum,
+    // reducing the chance of int64 overflow during addition.
+    int64_t lo = xx, mid = yy, hi = zz;
+    if (lo > mid) std::swap(lo, mid);
+    if (mid > hi) std::swap(mid, hi);
+    if (lo > mid) std::swap(lo, mid);
+
+    // Step 1: lo + hi
+    // If lo + hi overflows int64, the final result must saturate to INT32_MAX/INT32_MIN.
+    // The middle value (mid) cannot bring the result back into the int32 range,
+    // so we can return immediately without considering mid.
+    if (hi > 0 && lo > INT64_MAX - hi)
+    {
+        return INT32_MAX;
+    }
+    if (hi < 0 && lo < INT64_MIN - hi)
+    {
+        return INT32_MIN;
+    }
+    int64_t sum = lo + hi;
+
+    // Step 2: sum + mid
+    if (mid > 0 && sum > INT64_MAX - mid)
+    {
+        return INT32_MAX;
+    }
+    if (mid < 0 && sum < INT64_MIN - mid)
+    {
+        return INT32_MIN;
+    }
+    sum += mid;
+
+    return cv::saturate_cast<int>(sum);
 }
 
 template<typename _Tp> inline
@@ -1931,7 +1995,7 @@ template<typename _Tp> static inline
 Rect_<_Tp>& operator &= ( Rect_<_Tp>& a, const Rect_<_Tp>& b )
 {
     if (a.empty() || b.empty()) {
-        a = Rect();
+        a = Rect_<_Tp>();
         return a;
     }
     const Rect_<_Tp>& Rx_min = (a.x < b.x) ? a : b;
@@ -1945,9 +2009,18 @@ Rect_<_Tp>& operator &= ( Rect_<_Tp>& a, const Rect_<_Tp>& b )
     // Let us first deal with the following case.
     if ((Rx_min.x < 0 && Rx_min.x + Rx_min.width < Rx_max.x) ||
         (Ry_min.y < 0 && Ry_min.y + Ry_min.height < Ry_max.y)) {
-        a = Rect();
+        a = Rect_<_Tp>();
         return a;
     }
+
+    // If the delta between x/y coordinates exceeds the corresponding width/height,
+    // the rectangles cannot overlap and `width - delta` would underflow for unsigned types.
+    if (Rx_min.width < (Rx_max.x - Rx_min.x) ||
+        Ry_min.height < (Ry_max.y - Ry_min.y)) {
+        a = Rect_<_Tp>();
+        return a;
+    }
+
     // We now know that either Rx_min.x >= 0, or
     // Rx_min.x < 0 && Rx_min.x + Rx_min.width >= Rx_max.x and therefore
     // Rx_min.width >= (Rx_max.x - Rx_min.x) which means (Rx_max.x - Rx_min.x)
@@ -1957,7 +2030,7 @@ Rect_<_Tp>& operator &= ( Rect_<_Tp>& a, const Rect_<_Tp>& b )
     a.x = Rx_max.x;
     a.y = Ry_max.y;
     if (a.empty())
-        a = Rect();
+        a = Rect_<_Tp>();
     return a;
 }
 

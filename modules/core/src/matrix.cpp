@@ -553,7 +553,7 @@ void Mat::release()
     for(int i = 0; i < dims; i++)
         size.p[i] = 0;
 #ifdef _DEBUG
-    flags = MAGIC_VAL;
+    flags = (flags & CV_MAT_TYPE_MASK) | MAGIC_VAL;
     dims = rows = cols = 0;
     if(step.p != step.buf)
     {
@@ -1030,7 +1030,7 @@ void Mat::resize(size_t nelems)
         reserve(nelems);
 
     size.p[0] = (int)nelems;
-    dataend += (size.p[0] - saveRows)*step.p[0];
+    dataend += (size.p[0] - saveRows)*(ptrdiff_t)step.p[0];
 
     //updateContinuityFlag(*this);
 }
